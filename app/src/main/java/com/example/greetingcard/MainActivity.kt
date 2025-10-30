@@ -94,19 +94,22 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
         }
     }
 
-    // 显示指针（恢复透明度）
+    // 显示指针（恢复视图）
     private fun showPointer() {
-        if (isPointerViewAttached) {
-            pointerImageView.alpha = 1f // 设置透明度为 1，完全不透明
+        if (!isPointerViewAttached) {
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val params = pointerImageView.layoutParams as WindowManager.LayoutParams
+            windowManager.addView(pointerImageView, params)
+            isPointerViewAttached = true
         }
     }
     private fun removePointer() {
         if (isPointerViewAttached) {
-            pointerImageView.alpha = 0f // 设置透明度为 1，完全不透明
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            windowManager.removeView(pointerImageView) // 从窗口管理器中移除视图
+            isPointerViewAttached = false
             isShow = false
         }
-//        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-//        windowManager.removeView(pointerImageView) // 移除悬浮窗
     }
 
     private fun requestOverlayPermission() {
