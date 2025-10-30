@@ -1,4 +1,4 @@
-package com.example.greetingcard
+package com.gtm.vpointer
 
 import android.os.Bundle
 import android.widget.ImageView

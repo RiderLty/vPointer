@@ -1,4 +1,4 @@
-package com.example.greetingcard
+package com.gtm.vpointer
 
 import org.junit.Test
 

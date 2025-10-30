@@ -1,4 +1,4 @@
-package com.example.greetingcard
+package com.gtm.vpointer
 
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch

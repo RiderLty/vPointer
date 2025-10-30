@@ -1,4 +1,4 @@
-name: build-builder-multiarch
+name: build-builder
 on:
   workflow_dispatch:
       

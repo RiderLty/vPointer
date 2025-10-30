@@ -16,4 +16,6 @@ local.properties
 android-sdk
 commandlinetools*
 gradle*
+PASSWORD
+release-key.jks
 

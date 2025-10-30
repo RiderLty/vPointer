@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.greetingcard"
+    namespace = "com.gtm.vpointer"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.greetingcard"
+        applicationId = "com.gtm.vpointer"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

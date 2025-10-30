@@ -79,3 +79,4 @@ RUN mkdir /application
 WORKDIR /application
 
 # docker run --rm -it -v ./:/application builder gradle assembleDebug
+# docker run --rm -it -v ./:/application riderlty/vpoint-builder gradle assembleDebug
