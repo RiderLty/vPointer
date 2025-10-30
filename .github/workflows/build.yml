@@ -1,0 +1,41 @@
+name: Build Signed APK
+
+on:
+  push:
+    branches: [ main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Restore Android Keystore
+      run: |
+        echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release-key.jks
+      shell: bash
+      
+    - name: Build Signed APK
+      run: |
+        docker run --rm \
+          -v $PWD:/application \
+          -e KEYSTORE_PASSWORD="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+          -e KEY_ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}" \
+          -e KEY_PASSWORD="${{ secrets.ANDROID_KEY_PASSWORD }}" \
+          riderlty/vpoint-builder \
+          gradle assembleRelease
+          
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: signed-apk
+        path: app/build/outputs/apk/release/*.apk
+        retention-days: 30
