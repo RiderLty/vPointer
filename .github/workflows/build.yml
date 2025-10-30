@@ -44,7 +44,7 @@ jobs:
         for file in *.apk; do
           if [[ "$file" == *"release"* ]]; then
             new_name="vPoint.${{ steps.date.outputs.date }}.apk"
-            mv "$file" "$new_name"
+            cp "$file" "$new_name"
             echo "new_apk_path=app/build/outputs/apk/release/$new_name" >> $GITHUB_ENV
             echo "APK renamed to: $new_name"
             break
