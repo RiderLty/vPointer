@@ -1,10 +1,10 @@
-name: Build Signed APK
+name: Build and Release APK
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main]
-
+    tags:
+      - 'v*' 
+  workflow_dispatch:
 
 jobs:
   build:
@@ -23,8 +23,7 @@ jobs:
     - name: Restore Android Keystore
       run: |
         echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release-key.jks
-      shell: bash
-      
+        
     - name: Build Signed APK
       run: |
         docker run --rm \
@@ -35,9 +34,43 @@ jobs:
           riderlty/vpoint-builder \
           gradle assembleRelease
           
-    - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
+    - name: Get current date
+      id: date
+      run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+      
+    - name: Rename APK file
+      run: |
+        cd app/build/outputs/apk/release
+        for file in *.apk; do
+          if [[ "$file" == *"release"* ]]; then
+            new_name="vPoint.${{ steps.date.outputs.date }}.apk"
+            mv "$file" "$new_name"
+            echo "new_apk_path=app/build/outputs/apk/release/$new_name" >> $GITHUB_ENV
+            echo "APK renamed to: $new_name"
+            break
+          fi
+        done
+        
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
       with:
-        name: signed-apk
-        path: app/build/outputs/apk/release/*.apk
-        retention-days: 30
+        tag_name: release-${{ steps.date.outputs.date }}
+        release_name: "vPoint Release ${{ steps.date.outputs.date }}"
+        body: |
+          Automatic build of vPoint APK
+          
+          - Build date: ${{ steps.date.outputs.date }}
+          - Commit: ${{ github.sha }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Upload APK to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ env.new_apk_path }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
