@@ -50,11 +50,19 @@ jobs:
           fi
         done
 
-    - name: Create GitHub release
-      uses: marvinpinto/action-automatic-releases@latest
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
       with:
-        repo_token: "${{ secrets.GITHUB_TOKEN }}"
-        automatic_release_tag: ${{ github.event.client_payload.tag}}
-        title: ${{ github.event.client_payload.title}}
+        tag_name: ${{ github.ref_name }} 
+        name: "vPoint Release ${{ steps.date.outputs.date }}"
+        body: |
+          Automatic release of vPoint APK
+          
+          - Build date: ${{ steps.date.outputs.date }}
+          - Tag: ${{ github.ref_name }}
+          - Commit: ${{ github.sha }}
+        draft: false
         prerelease: false
         files: ${{ env.new_apk_path }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
