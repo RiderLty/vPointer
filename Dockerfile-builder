@@ -1,0 +1,81 @@
+# FROM openjdk:17-jdk-slim
+# # Install dev-essential(gnumake)
+# RUN apt update
+# RUN apt install -y build-essential
+# # Set ENV
+# ENV SDK_URL="https://dl.google.com/android/repository/sdk-tools-linux-4333796.zip" \
+#     ANDROID_HOME="/usr/local/android-sdk" \
+#     ANDROID_VERSION=28 \
+#     ANDROID_BUILD_TOOLS_VERSION=28.0.3 \
+#     GRADLE_VERSION=4.10.3 \
+#     NDK_VERSION=r16b
+# # Download Android SDK
+# RUN mkdir "$ANDROID_HOME" .android \
+#     && cd "$ANDROID_HOME" \
+#     && curl -o sdk.zip $SDK_URL \
+#     && unzip sdk.zip \
+#     && rm sdk.zip \
+#     && yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses --sdk_root=${ANDROID_HOME}
+# # Install Android Build Tool and Libraries
+# RUN $ANDROID_HOME/tools/bin/sdkmanager --update
+# RUN yes | $ANDROID_HOME/tools/bin/sdkmanager "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+#     "platforms;android-${ANDROID_VERSION}" \
+#     "platform-tools" --sdk_root=${ANDROID_HOME}
+# # Install Gradle
+# RUN wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-all.zip
+# RUN mkdir /opt/gradle
+# RUN unzip gradle-${GRADLE_VERSION}-all.zip -d /opt/gradle
+# ENV PATH=${PATH}:/opt/gradle/gradle-${GRADLE_VERSION}/bin
+# # Install NDK
+# RUN wget https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux-x86_64.zip
+# RUN mkdir /opt/ndk-bundle
+# RUN unzip android-ndk-${NDK_VERSION}-linux-x86_64.zip -d /opt/ndk-bundle
+# ENV PATH=${PATH}:/opt/ndk-bundle
+
+# RUN mkdir /application
+# WORKDIR /application
+
+
+
+# FROM openjdk:17-jdk-slim
+# RUN apt-get update && apt-get install -y wget unzip  \
+#     && wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip \
+#     && mkdir -p android-sdk/cmdline-tools \
+#     && unzip commandlinetools-linux-8512546_latest.zip -d android-sdk/cmdline-tools \
+#     && mv android-sdk/cmdline-tools/cmdline-tools android-sdk/cmdline-tools/latest \
+#     && export ANDROID_HOME=$PWD/android-sdk \
+#     && export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools \
+#     && sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.0" \
+#     && yes | sdkmanager --licenses \
+#     && wget https://services.gradle.org/distributions/gradle-8.13-bin.zip \
+#     && unzip -d /opt/gradle gradle-8.13-bin.zip \
+#     && export GRADLE_HOME=/opt/gradle/gradle-8.13 \
+#     && export PATH=$PATH:$GRADLE_HOME/bin
+
+# RUN mkdir /application
+# WORKDIR /application
+
+
+
+FROM openjdk:17-jdk-slim AS android-setup
+RUN apt-get update && apt-get install -y wget unzip
+RUN wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip \
+    && mkdir -p /android-sdk/cmdline-tools \
+    && unzip commandlinetools-linux-8512546_latest.zip -d /android-sdk/cmdline-tools \
+    && mv /android-sdk/cmdline-tools/cmdline-tools /android-sdk/cmdline-tools/latest
+RUN /android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.0" \
+    && yes | /android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+RUN wget https://services.gradle.org/distributions/gradle-8.13-bin.zip \
+    && unzip -d /opt/gradle gradle-8.13-bin.zip
+FROM openjdk:17-jdk-slim
+COPY --from=android-setup /android-sdk /android-sdk
+COPY --from=android-setup /opt/gradle /opt/gradle
+ENV ANDROID_HOME=/android-sdk
+ENV GRADLE_HOME=/opt/gradle/gradle-8.13
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$GRADLE_HOME/bin
+RUN echo "Android SDK version:" && $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --version \
+    && echo "Gradle version:" && $GRADLE_HOME/bin/gradle --version
+RUN mkdir /application
+WORKDIR /application
+
+# docker run --rm -it -v ./:/application builder gradle assembleDebug
