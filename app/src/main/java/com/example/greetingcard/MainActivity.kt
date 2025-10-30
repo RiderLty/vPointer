@@ -32,16 +32,18 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
 
         // 初始化 UDP 接收器
         udpReceiver = UdpReceiver { abs_x, abs_y, show_int, _, _ ->
-            if (show_int == 1) {
-                if (!isShow){
-                    isShow = true
-                    showPointer()
+            runOnUiThread {
+                if (show_int == 1) {
+                    if (!isShow){
+                        isShow = true
+                        showPointer()
+                    }
+                    // 更新指针的位置
+                    updatePointerPosition(abs_x, abs_y)
+                } else {
+                    // 不显示指针
+                    removePointer()
                 }
-                // 更新指针的位置
-                updatePointerPosition(abs_x, abs_y)
-            } else {
-                // 不显示指针
-                removePointer()
             }
         }
         udpReceiver.startReceiving()
@@ -84,14 +86,11 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
 
     private fun updatePointerPosition(abs_x: Int, abs_y: Int) {
         if (!isPointerViewAttached) return
-        // 确保更新操作在主线程中进行
-        runOnUiThread {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val params = pointerImageView.layoutParams as WindowManager.LayoutParams
-            params.x = abs_x
-            params.y = abs_y
-            windowManager.updateViewLayout(pointerImageView, params) // 更新位置
-        }
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val params = pointerImageView.layoutParams as WindowManager.LayoutParams
+        params.x = abs_x
+        params.y = abs_y
+        windowManager.updateViewLayout(pointerImageView, params) // 更新位置
     }
 
     // 显示指针（恢复视图）
