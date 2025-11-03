@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, // 普通应用用这个
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, // 允许绘制到状态栏和导航栏
             android.graphics.PixelFormat.TRANSLUCENT
