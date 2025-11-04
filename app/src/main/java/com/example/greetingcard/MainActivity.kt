@@ -3,7 +3,9 @@ package com.gtm.vpointer
 import android.animation.ObjectAnimator
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
+import android.content.res.Confi
+
+guration
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
