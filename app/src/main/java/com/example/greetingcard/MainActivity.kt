@@ -1,9 +1,9 @@
 package com.gtm.vpointer
 
+import android.animation.ObjectAnimator
 import android.os.Bundle
 import android.widget.ImageView
-import android.widget.RelativeLayout
-import androidx.activity.ComponentActivity // 导入 ComponentActivity
+import androidx.activity.ComponentActivity
 import android.graphics.BitmapFactory
 import android.view.WindowManager
 import android.provider.Settings
@@ -11,15 +11,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-//import kotlinx.coroutines.GlobalScope
-//import kotlinx.coroutines.launch
-//import java.net.DatagramPacket
-//import java.net.DatagramSocket
 import android.view.Gravity
 import androidx.annotation.RequiresApi
 
-class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
-    private var isPointerViewAttached = false // 用于标记视图是否已附加
+class MainActivity : ComponentActivity() {
+    private var isPointerViewAttached = false
     private var isShow = false
     private lateinit var pointerImageView: ImageView
     private lateinit var udpReceiver: UdpReceiver
@@ -28,9 +24,8 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        requestOverlayPermission()  // 请求悬浮窗权限
+        requestOverlayPermission()
 
-        // 初始化 UDP 接收器
         udpReceiver = UdpReceiver { abs_x, abs_y, show_int, _, _ ->
             runOnUiThread {
                 if (show_int == 1) {
@@ -38,17 +33,15 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
                         isShow = true
                         showPointer()
                     }
-                    // 更新指针的位置
                     updatePointerPosition(abs_x, abs_y)
                 } else {
-                    // 不显示指针
-                    removePointer()
+                    if (isShow) {
+                        removePointer()
+                    }
                 }
             }
         }
         udpReceiver.startReceiving()
-
-        // 创建悬浮窗
         createFloatingPointer()
     }
 
@@ -59,19 +52,19 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, // 普通应用用这个
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, // 允许绘制到状态栏和导航栏
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             android.graphics.PixelFormat.TRANSLUCENT
         )
 
-        // 将坐标系的原点设置为屏幕的左上角（包含状态栏区域）
         params.gravity = Gravity.TOP or Gravity.START
 
         pointerImageView = ImageView(this)
         pointerImageView.setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
+        pointerImageView.alpha = 0f // Make it transparent initially
 
         params.x = 0
         params.y = 0
@@ -84,30 +77,30 @@ class MainActivity : ComponentActivity() {  // 继承自 ComponentActivity
         }
     }
 
-
     private fun updatePointerPosition(abs_x: Int, abs_y: Int) {
         if (!isPointerViewAttached) return
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val params = pointerImageView.layoutParams as WindowManager.LayoutParams
         params.x = abs_x
         params.y = abs_y
-        windowManager.updateViewLayout(pointerImageView, params) // 更新位置
+        windowManager.updateViewLayout(pointerImageView, params)
     }
 
-    // 显示指针（恢复视图）
+    // Animate to opaque
     private fun showPointer() {
-        if (!isPointerViewAttached) {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val params = pointerImageView.layoutParams as WindowManager.LayoutParams
-            windowManager.addView(pointerImageView, params)
-            isPointerViewAttached = true
+        if (isPointerViewAttached) {
+            val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 1f)
+            animator.duration = 200
+            animator.start()
         }
     }
+
+    // Animate to transparent
     private fun removePointer() {
         if (isPointerViewAttached) {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            windowManager.removeView(pointerImageView) // 从窗口管理器中移除视图
-            isPointerViewAttached = false
+            val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 0f)
+            animator.duration = 200
+            animator.start()
             isShow = false
         }
     }
