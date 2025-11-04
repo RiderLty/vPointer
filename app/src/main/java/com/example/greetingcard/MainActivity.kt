@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
 
         requestOverlayPermission()
 
-        udpReceiver = UdpReceiver { abs_x, abs_y, show_int, _, _ ->
+        udpReceiver = UdpReceiver { abs_x, abs_y, show_int, downing_int, _ ->
             runOnUiThread {
                 if (show_int == 1) {
                     if (!isShow) {
@@ -36,6 +36,13 @@ class MainActivity : ComponentActivity() {
                         showPointer()
                     }
                     updatePointerPosition(abs_x, abs_y)
+                    if (downing_int == 1) {
+                        pointerImageView.scaleX = 0.75f
+                        pointerImageView.scaleY = 0.75f
+                    } else {
+                        pointerImageView.scaleX = 1.0f
+                        pointerImageView.scaleY = 1.0f
+                    }
                 } else {
                     if (isShow) {
                         removePointer()
@@ -67,6 +74,8 @@ class MainActivity : ComponentActivity() {
         pointerImageView = ImageView(this)
         pointerImageView.setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
         pointerImageView.alpha = 0f // Make it transparent initially
+        pointerImageView.pivotX = 0f
+        pointerImageView.pivotY = 0f
 
         params.x = 0
         params.y = 0
