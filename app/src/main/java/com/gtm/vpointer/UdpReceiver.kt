@@ -19,7 +19,6 @@ class UdpReceiver(private val listener: (Int, Int, Int, Int, Int) -> Unit) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket.receive(packet)
 
-                    clients.clear()
                     clients.add(Pair(packet.address, packet.port))
 
                     val data = String(packet.data, 0, packet.length)

@@ -37,8 +37,8 @@ class MainActivity : ComponentActivity() {
                     }
                     updatePointerPosition(abs_x, abs_y)
                     if (downing_int == 1) {
-                        pointerImageView.scaleX = 0.75f
-                        pointerImageView.scaleY = 0.75f
+                        pointerImageView.scaleX = 0.95f
+                        pointerImageView.scaleY = 0.95f
                     } else {
                         pointerImageView.scaleX = 1.0f
                         pointerImageView.scaleY = 1.0f
