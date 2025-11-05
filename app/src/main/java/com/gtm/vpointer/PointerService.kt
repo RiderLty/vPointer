@@ -117,8 +117,14 @@ class PointerService : Service() {
                 showPointer()
             }
             updatePointerPosition(abs_x, abs_y)
-            pointerImageView.scaleX = if (downing_int == 1) 0.95f else 1.0f
-            pointerImageView.scaleY = if (downing_int == 1) 0.95f else 1.0f
+            if (downing_int == 1) {
+                pointerImageView.scaleX = 0.95f
+                pointerImageView.scaleY = 0.95f
+                sendDeviceOrientation(getDeviceRotation())
+            } else {
+                pointerImageView.scaleX = 1.0f
+                pointerImageView.scaleY = 1.0f
+            }
         } else {
             if (isShow) {
                 removePointer()
@@ -141,14 +147,6 @@ class PointerService : Service() {
     private fun removePointer() {
         val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 0f)
         animator.duration = 200
-        animator.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                if (isPointerViewAttached) {
-                    windowManager.removeView(pointerImageView)
-                    isPointerViewAttached = false
-                }
-            }
-        })
         animator.start()
         isShow = false
     }
