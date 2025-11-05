@@ -1,12 +1,14 @@
 package com.gtm.vpointer
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ObjectAnimator
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -139,12 +141,14 @@ class PointerService : Service() {
     private fun removePointer() {
         val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 0f)
         animator.duration = 200
-        animator.withEndAction {
-            if (isPointerViewAttached) {
-                windowManager.removeView(pointerImageView)
-                isPointerViewAttached = false
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (isPointerViewAttached) {
+                    windowManager.removeView(pointerImageView)
+                    isPointerViewAttached = false
+                }
             }
-        }
+        })
         animator.start()
         isShow = false
     }
