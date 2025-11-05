@@ -8,8 +8,24 @@ import java.net.InetAddress
 
 class UdpReceiver(private val listener: (Int, Int, Int, Int, Int) -> Unit) {
 
-    private val socket = DatagramSocket(6533)
-    private val clients = mutableSetOf<Pair<InetAddress, Int>>()
+    companion object {
+        private val socket = DatagramSocket(6533)
+        private val clients = mutableSetOf<Pair<InetAddress, Int>>()
+
+        fun sendOrientation(orientation: Byte) {
+            GlobalScope.launch {
+                clients.forEach { (address, port) ->
+                    try {
+                        val data = byteArrayOf(orientation)
+                        val packet = DatagramPacket(data, data.size, address, port)
+                        socket.send(packet)
+                    } catch (e: Exception) {
+                        // Ignore send errors
+                    }
+                }
+            }
+        }
+    }
 
     fun startReceiving() {
         GlobalScope.launch {
@@ -34,20 +50,6 @@ class UdpReceiver(private val listener: (Int, Int, Int, Int, Int) -> Unit) {
                     }
                 } catch (e: Exception) {
                     // Handle exception
-                }
-            }
-        }
-    }
-
-    fun sendOrientation(orientation: Byte) {
-        GlobalScope.launch {
-            clients.forEach { (address, port) ->
-                try {
-                    val data = byteArrayOf(orientation)
-                    val packet = DatagramPacket(data, data.size, address, port)
-                    socket.send(packet)
-                } catch (e: Exception) {
-                    // Ignore send errors
                 }
             }
         }

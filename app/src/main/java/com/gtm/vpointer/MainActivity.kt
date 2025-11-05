@@ -3,14 +3,12 @@ package com.gtm.vpointer
 import android.animation.ObjectAnimator
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
-import android.view.Surface
 import android.view.WindowManager
 import android.widget.ImageView
 import androidx.activity.ComponentActivity
@@ -52,6 +50,10 @@ class MainActivity : ComponentActivity() {
         }
         udpReceiver.startReceiving()
         createFloatingPointer()
+
+        // Start the OrientationService
+        val serviceIntent = Intent(this, OrientationService::class.java)
+        startService(serviceIntent)
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
@@ -104,7 +106,6 @@ class MainActivity : ComponentActivity() {
             animator.duration = 200
             animator.start()
         }
-        sendDeviceOrientation()
     }
 
     // Animate to transparent
@@ -115,7 +116,6 @@ class MainActivity : ComponentActivity() {
             animator.start()
             isShow = false
         }
-        sendDeviceOrientation()
     }
 
     private fun requestOverlayPermission() {
@@ -124,28 +124,6 @@ class MainActivity : ComponentActivity() {
             startActivityForResult(intent, REQUEST_OVERLAY_PERMISSION)
         }
     }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        sendDeviceOrientation()
-    }
-
-    private fun sendDeviceOrientation() {
-        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.rotation
-        } else {
-            windowManager.defaultDisplay.rotation
-        }
-        val orientation: Byte = when (rotation) {
-            Surface.ROTATION_0 -> 0x00
-            Surface.ROTATION_90 -> 0x01
-            Surface.ROTATION_180 -> 0x02
-            Surface.ROTATION_270 -> 0x03
-            else -> 0x00
-        }
-        udpReceiver.sendOrientation(orientation)
-    }
-
 
     companion object {
         private const val REQUEST_OVERLAY_PERMISSION = 1234
