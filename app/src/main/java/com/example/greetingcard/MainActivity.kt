@@ -5,20 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
-import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.view.Display
 import android.view.Gravity
 import android.view.Surface
-import android.view.View
 import android.view.WindowManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.ImageView
-import android.widget.Spinner
 import androidx.activity.ComponentActivity
 import androidx.annotation.RequiresApi
 
@@ -27,40 +21,12 @@ class MainActivity : ComponentActivity() {
     private var isShow = false
     private lateinit var pointerImageView: ImageView
     private lateinit var udpReceiver: UdpReceiver
-    private lateinit var displayManager: DisplayManager
-    private lateinit var displays: Array<Display>
-    private var selectedDisplay: Display? = null
-    private var windowManager: WindowManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         requestOverlayPermission()
-
-        displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        displays = displayManager.displays
-
-        val displayIds = displays.map { it.displayId.toString() }.toTypedArray()
-
-        val spinner = findViewById<Spinner>(R.id.display_spinner)
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, displayIds)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        spinner.adapter = adapter
-
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>, view: View, position: Int, id: Long) {
-                selectedDisplay = displays[position]
-                if (isPointerViewAttached) {
-                    removePointerFromScreen()
-                }
-                createFloatingPointer(selectedDisplay!!)
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>) {
-                // Do nothing
-            }
-        }
 
         udpReceiver = UdpReceiver { abs_x, abs_y, show_int, downing_int, _ ->
             runOnUiThread {
@@ -85,12 +51,12 @@ class MainActivity : ComponentActivity() {
             }
         }
         udpReceiver.startReceiving()
+        createFloatingPointer()
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
-    private fun createFloatingPointer(display: Display) {
-        val displayContext = createDisplayContext(display)
-        windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private fun createFloatingPointer() {
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -105,7 +71,7 @@ class MainActivity : ComponentActivity() {
 
         params.gravity = Gravity.TOP or Gravity.START
 
-        pointerImageView = ImageView(displayContext)
+        pointerImageView = ImageView(this)
         pointerImageView.setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
         pointerImageView.alpha = 0f // Make it transparent initially
         pointerImageView.pivotX = 0f
@@ -115,26 +81,20 @@ class MainActivity : ComponentActivity() {
         params.y = 0
 
         try {
-            windowManager?.addView(pointerImageView, params)
+            windowManager.addView(pointerImageView, params)
             isPointerViewAttached = true
         } catch (e: Exception) {
             Log.e("MainActivity", "无法添加悬浮窗: ${e.message}")
         }
     }
 
-    private fun removePointerFromScreen() {
-        if (isPointerViewAttached) {
-            windowManager?.removeView(pointerImageView)
-            isPointerViewAttached = false
-        }
-    }
-
     private fun updatePointerPosition(abs_x: Int, abs_y: Int) {
         if (!isPointerViewAttached) return
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val params = pointerImageView.layoutParams as WindowManager.LayoutParams
         params.x = abs_x
         params.y = abs_y
-        windowManager?.updateViewLayout(pointerImageView, params)
+        windowManager.updateViewLayout(pointerImageView, params)
     }
 
     // Animate to opaque
@@ -172,9 +132,9 @@ class MainActivity : ComponentActivity() {
 
     private fun sendDeviceOrientation() {
         val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            selectedDisplay?.rotation
+            display?.rotation
         } else {
-            windowManager?.defaultDisplay?.rotation
+            windowManager.defaultDisplay.rotation
         }
         val orientation: Byte = when (rotation) {
             Surface.ROTATION_0 -> 0x00
