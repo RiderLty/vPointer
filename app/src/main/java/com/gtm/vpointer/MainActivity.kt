@@ -1,6 +1,7 @@
 package com.gtm.vpointer
 
 import android.content.Context
+import android.content.DialogInterface
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.net.Uri
@@ -10,9 +11,9 @@ import android.provider.Settings
 import android.view.Display
 import android.widget.Button
 import androidx.appcompat.app.AlertDialog
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,10 +41,10 @@ class MainActivity : ComponentActivity() {
 
         val builder = AlertDialog.Builder(this)
         builder.setTitle("Select a Display")
-        builder.setItems(displayNames) { _, which ->
+        builder.setItems(displayNames, DialogInterface.OnClickListener { _, which ->
             val selectedDisplay = displays[which]
             startPointerService(selectedDisplay.displayId)
-        }
+        })
         builder.show()
     }
 
