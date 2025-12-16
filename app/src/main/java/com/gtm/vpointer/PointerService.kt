@@ -27,7 +27,7 @@ import java.net.InetAddress
 
 class PointerService : Service() {
 
-    private lateinit var windowManager: WindowManager
+    private var windowManager: WindowManager? = null
     private lateinit var pointerImageView: ImageView
     private lateinit var params: WindowManager.LayoutParams
 
@@ -38,16 +38,38 @@ class PointerService : Service() {
     private val clients = mutableSetOf<Pair<InetAddress, Int>>()
     private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
+    private var displayId: Int = Display.DEFAULT_DISPLAY
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val newDisplayId = intent?.getIntExtra("displayId", Display.DEFAULT_DISPLAY) ?: Display.DEFAULT_DISPLAY
+        if (windowManager == null || newDisplayId != displayId) {
+            displayId = newDisplayId
+            createFloatingPointer(displayId)
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
 
     override fun onCreate() {
         super.onCreate()
-        createFloatingPointer()
         startUdpReceiver()
         startOrientationListener()
     }
 
-    private fun createFloatingPointer() {
-        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private fun createFloatingPointer(displayId: Int) {
+        if (windowManager != null && isPointerViewAttached) {
+            windowManager?.removeView(pointerImageView)
+            isPointerViewAttached = false
+        }
+
+        val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val display = displayManager.getDisplay(displayId)
+        val displayContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            createDisplayContext(display)
+        } else {
+            this
+        }
+        windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -134,7 +156,7 @@ class PointerService : Service() {
 
     private fun showPointer() {
         if (!isPointerViewAttached) {
-            windowManager.addView(pointerImageView, params)
+            windowManager?.addView(pointerImageView, params)
             isPointerViewAttached = true
             sendDeviceOrientation(getDeviceRotation())
         }
@@ -155,17 +177,17 @@ class PointerService : Service() {
         if (isPointerViewAttached) {
             params.x = x
             params.y = y
-            windowManager.updateViewLayout(pointerImageView, params)
+            windowManager?.updateViewLayout(pointerImageView, params)
         }
     }
 
     private fun getDeviceRotation(): Int {
         val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            displayManager.getDisplay(Display.DEFAULT_DISPLAY)
+            displayManager.getDisplay(displayId)
         } else {
             @Suppress("DEPRECATION")
-            windowManager.defaultDisplay
+            windowManager?.defaultDisplay
         }
         return display?.rotation ?: Surface.ROTATION_0
     }
@@ -194,7 +216,7 @@ class PointerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         if (isPointerViewAttached) {
-            windowManager.removeView(pointerImageView)
+            windowManager?.removeView(pointerImageView)
         }
         socket.close()
         orientationEventListener.disable()
