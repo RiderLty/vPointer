@@ -51,13 +51,16 @@ class PointerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val displayId = intent?.getIntExtra(MainActivity.EXTRA_DISPLAY_ID, Display.DEFAULT_DISPLAY)
             ?: Display.DEFAULT_DISPLAY
+        android.util.Log.d("PointerService", "onStartCommand called with displayId: $displayId")
 
         // 如果显示器 ID 变化，重新创建窗口
         if (displayId != targetDisplayId) {
+            android.util.Log.d("PointerService", "Display changed from $targetDisplayId to $displayId, recreating pointer")
             removeExistingPointer()
             targetDisplayId = displayId
             createFloatingPointer()
         } else if (pointerImageView == null) {
+            android.util.Log.d("PointerService", "pointerImageView is null, creating new one")
             createFloatingPointer()
         }
 
@@ -65,19 +68,32 @@ class PointerService : Service() {
         startOrientationListener()
         startDisplayListener()
 
+        android.util.Log.d("PointerService", "onStartCommand completed, returning START_STICKY")
         return START_STICKY
     }
 
     private fun createFloatingPointer() {
+        android.util.Log.d("PointerService", "createFloatingPointer called, targetDisplayId: $targetDisplayId")
         val display = displayManagerHelper.getDisplayById(targetDisplayId)
+        android.util.Log.d("PointerService", "Display found: ${display?.displayId}, name: ${display?.name}")
 
         // 如果目标显示器不存在，回退到默认显示器
         if (display == null) {
+            android.util.Log.w("PointerService", "Target display not found, falling back to DEFAULT_DISPLAY")
             targetDisplayId = Display.DEFAULT_DISPLAY
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         } else {
-            val displayContext = this.createDisplayContext(display)
-            windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            try {
+                android.util.Log.d("PointerService", "Creating display context for display: ${display.displayId}")
+                val displayContext = this.createDisplayContext(display)
+                android.util.Log.d("PointerService", "Display context created successfully")
+                windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                android.util.Log.d("PointerService", "WindowManager obtained from display context")
+            } catch (e: Exception) {
+                android.util.Log.e("PointerService", "Failed to create display context", e)
+                targetDisplayId = Display.DEFAULT_DISPLAY
+                windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            }
         }
 
         params = WindowManager.LayoutParams(

@@ -71,11 +71,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startPointerService() {
-        val displayId = selectedDisplayId ?: return
+        val displayId = selectedDisplayId ?: run {
+            android.util.Log.e("MainActivity", "selectedDisplayId is null, returning")
+            return
+        }
+        android.util.Log.d("MainActivity", "Starting PointerService with displayId: $displayId")
         val serviceIntent = Intent(this, PointerService::class.java).apply {
             putExtra(EXTRA_DISPLAY_ID, displayId)
         }
         startService(serviceIntent)
+        android.util.Log.d("MainActivity", "PointerService started")
     }
 
     override fun onDestroy() {
