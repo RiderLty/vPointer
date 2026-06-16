@@ -27,9 +27,9 @@ import java.net.InetAddress
 
 class PointerService : Service() {
 
-    private lateinit var windowManager: WindowManager
-    private lateinit var pointerImageView: ImageView
-    private lateinit var params: WindowManager.LayoutParams
+    private var windowManager: WindowManager? = null
+    private var pointerImageView: ImageView? = null
+    private var params: WindowManager.LayoutParams? = null
 
     private var isPointerViewAttached = false
     private var isShow = false
@@ -39,15 +39,47 @@ class PointerService : Service() {
     private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
 
+    private var targetDisplayId = Display.DEFAULT_DISPLAY
+    private lateinit var displayManagerHelper: DisplayManagerHelper
+    private var displayListener: DisplayManager.DisplayListener? = null
+
     override fun onCreate() {
         super.onCreate()
-        createFloatingPointer()
+        displayManagerHelper = DisplayManagerHelper(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val displayId = intent?.getIntExtra(MainActivity.EXTRA_DISPLAY_ID, Display.DEFAULT_DISPLAY)
+            ?: Display.DEFAULT_DISPLAY
+
+        // 如果显示器 ID 变化，重新创建窗口
+        if (displayId != targetDisplayId) {
+            removeExistingPointer()
+            targetDisplayId = displayId
+            createFloatingPointer()
+        } else if (pointerImageView == null) {
+            createFloatingPointer()
+        }
+
         startUdpReceiver()
         startOrientationListener()
+        startDisplayListener()
+
+        return START_STICKY
     }
 
     private fun createFloatingPointer() {
-        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val display = displayManagerHelper.getDisplayById(targetDisplayId)
+
+        // 如果目标显示器不存在，回退到默认显示器
+        if (display == null) {
+            targetDisplayId = Display.DEFAULT_DISPLAY
+            windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        } else {
+            val displayContext = this.createDisplayContext(display)
+            windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        }
+
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -57,16 +89,60 @@ class PointerService : Service() {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        )
-        params.gravity = Gravity.TOP or Gravity.START
-        params.x = 0
-        params.y = 0
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
 
-        pointerImageView = ImageView(this)
-        pointerImageView.setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
-        pointerImageView.alpha = 0f
-        pointerImageView.pivotX = 0f
-        pointerImageView.pivotY = 0f
+        pointerImageView = ImageView(this).apply {
+            setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
+            alpha = 0f
+            pivotX = 0f
+            pivotY = 0f
+        }
+
+        isPointerViewAttached = false
+        isShow = false
+    }
+
+    private fun removeExistingPointer() {
+        if (isPointerViewAttached) {
+            try {
+                windowManager?.removeView(pointerImageView)
+            } catch (e: Exception) {
+                // Ignore if view is not attached
+            }
+            isPointerViewAttached = false
+        }
+        pointerImageView = null
+        params = null
+        windowManager = null
+    }
+
+    private fun startDisplayListener() {
+        displayListener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {
+                // 新显示器插入，不需要处理
+            }
+
+            override fun onDisplayRemoved(displayId: Int) {
+                // 如果目标显示器被移除，回退到主屏幕
+                if (displayId == targetDisplayId) {
+                    Handler(Looper.getMainLooper()).post {
+                        removeExistingPointer()
+                        targetDisplayId = Display.DEFAULT_DISPLAY
+                        createFloatingPointer()
+                    }
+                }
+            }
+
+            override fun onDisplayChanged(displayId: Int) {
+                // 显示器属性变化，不需要处理
+            }
+        }
+        val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        displayManager.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
     }
 
     private fun startUdpReceiver() {
@@ -118,12 +194,12 @@ class PointerService : Service() {
             }
             updatePointerPosition(abs_x, abs_y)
             if (downing_int == 1) {
-                pointerImageView.scaleX = 0.95f
-                pointerImageView.scaleY = 0.95f
+                pointerImageView?.scaleX = 0.95f
+                pointerImageView?.scaleY = 0.95f
                 sendDeviceOrientation(getDeviceRotation())
             } else {
-                pointerImageView.scaleX = 1.0f
-                pointerImageView.scaleY = 1.0f
+                pointerImageView?.scaleX = 1.0f
+                pointerImageView?.scaleY = 1.0f
             }
         } else {
             if (isShow) {
@@ -133,29 +209,41 @@ class PointerService : Service() {
     }
 
     private fun showPointer() {
-        if (!isPointerViewAttached) {
-            windowManager.addView(pointerImageView, params)
-            isPointerViewAttached = true
-            sendDeviceOrientation(getDeviceRotation())
+        if (!isPointerViewAttached && pointerImageView != null && params != null) {
+            try {
+                windowManager?.addView(pointerImageView, params)
+                isPointerViewAttached = true
+                sendDeviceOrientation(getDeviceRotation())
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
-        val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 1f)
-        animator.duration = 200
-        animator.start()
+        pointerImageView?.let { imageView ->
+            val animator = ObjectAnimator.ofFloat(imageView, "alpha", imageView.alpha, 1f)
+            animator.duration = 200
+            animator.start()
+        }
         isShow = true
     }
 
     private fun removePointer() {
-        val animator = ObjectAnimator.ofFloat(pointerImageView, "alpha", pointerImageView.alpha, 0f)
-        animator.duration = 200
-        animator.start()
+        pointerImageView?.let { imageView ->
+            val animator = ObjectAnimator.ofFloat(imageView, "alpha", imageView.alpha, 0f)
+            animator.duration = 200
+            animator.start()
+        }
         isShow = false
     }
 
     private fun updatePointerPosition(x: Int, y: Int) {
-        if (isPointerViewAttached) {
-            params.x = x
-            params.y = y
-            windowManager.updateViewLayout(pointerImageView, params)
+        if (isPointerViewAttached && params != null) {
+            params?.x = x
+            params?.y = y
+            try {
+                windowManager?.updateViewLayout(pointerImageView, params)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -165,7 +253,7 @@ class PointerService : Service() {
             displayManager.getDisplay(Display.DEFAULT_DISPLAY)
         } else {
             @Suppress("DEPRECATION")
-            windowManager.defaultDisplay
+            windowManager?.defaultDisplay
         }
         return display?.rotation ?: Surface.ROTATION_0
     }
@@ -193,11 +281,15 @@ class PointerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isPointerViewAttached) {
-            windowManager.removeView(pointerImageView)
-        }
+        removeExistingPointer()
         socket.close()
-        orientationEventListener.disable()
+        if (::orientationEventListener.isInitialized) {
+            orientationEventListener.disable()
+        }
+        displayListener?.let {
+            val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            displayManager.unregisterDisplayListener(it)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
