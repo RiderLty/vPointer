@@ -1,13 +1,14 @@
 package com.gtm.vpointer
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
 import android.animation.ObjectAnimator
+import android.app.Presentation
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
@@ -17,7 +18,9 @@ import android.view.Display
 import android.view.Gravity
 import android.view.OrientationEventListener
 import android.view.Surface
+import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.ImageView
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -27,11 +30,9 @@ import java.net.InetAddress
 
 class PointerService : Service() {
 
-    private var windowManager: WindowManager? = null
-    private var pointerImageView: ImageView? = null
-    private var params: WindowManager.LayoutParams? = null
+    // 抽象出渲染器：内置屏用 WindowManager 覆盖层，外接屏用 Presentation
+    private var renderer: PointerRenderer? = null
 
-    private var isPointerViewAttached = false
     private var isShow = false
 
     private val socket = DatagramSocket(6533)
@@ -59,8 +60,8 @@ class PointerService : Service() {
             removeExistingPointer()
             targetDisplayId = displayId
             createFloatingPointer()
-        } else if (pointerImageView == null) {
-            android.util.Log.d("PointerService", "pointerImageView is null, creating new one")
+        } else if (renderer == null) {
+            android.util.Log.d("PointerService", "renderer is null, creating new one")
             createFloatingPointer()
         }
 
@@ -77,81 +78,36 @@ class PointerService : Service() {
         val display = displayManagerHelper.getDisplayById(targetDisplayId)
         android.util.Log.d("PointerService", "Display found: ${display?.displayId}, name: ${display?.name}")
 
-        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        else
-            WindowManager.LayoutParams.TYPE_PHONE
-
-        // 如果目标显示器不存在，回退到默认显示器
+        // 目标显示器不存在，回退到内置屏覆盖层
         if (display == null) {
             android.util.Log.w("PointerService", "Target display not found, falling back to DEFAULT_DISPLAY")
             targetDisplayId = Display.DEFAULT_DISPLAY
-            windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            renderer = OverlayRenderer(this)
+            isShow = false
+            return
+        }
+
+        // 内置屏：用 WindowManager 覆盖层（已验证可用）。
+        // 外接屏：普通应用无法把覆盖层窗口加到副屏（系统会静默重定位回内置屏），
+        //         必须使用 Presentation 才能在指定 Display 上绘制。
+        renderer = if (display.displayId == Display.DEFAULT_DISPLAY) {
+            android.util.Log.d("PointerService", "Using OverlayRenderer for default display")
+            OverlayRenderer(this)
         } else {
-            try {
-                android.util.Log.d("PointerService", "Creating window context for display: ${display.displayId}")
-                // createDisplayContext 只调整资源指标，其 WindowManager 不持有绑定到目标
-                // 显示器的 window token，addView 的覆盖层窗口仍会落到默认显示器上。
-                // 必须使用 createWindowContext 才能把非 Activity 窗口正确添加到指定显示器。
-                val windowContext = when {
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                        createWindowContext(display, overlayType, null)
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
-                        createDisplayContext(display).createWindowContext(overlayType, null)
-                    else ->
-                        createDisplayContext(display)
-                }
-                android.util.Log.d("PointerService", "Window context created successfully")
-                windowManager = windowContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                android.util.Log.d("PointerService", "WindowManager obtained from window context")
-            } catch (e: Exception) {
-                android.util.Log.e("PointerService", "Failed to create window context", e)
-                targetDisplayId = Display.DEFAULT_DISPLAY
-                windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            }
+            android.util.Log.d("PointerService", "Using PresentationRenderer for display ${display.displayId}")
+            PresentationRenderer(this, display)
         }
-
-        params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = 0
-        }
-
-        pointerImageView = ImageView(this).apply {
-            setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
-            alpha = 0f
-            pivotX = 0f
-            pivotY = 0f
-        }
-
-        isPointerViewAttached = false
         isShow = false
     }
 
     private fun removeExistingPointer() {
-        if (isPointerViewAttached) {
-            try {
-                windowManager?.removeView(pointerImageView)
-            } catch (e: Exception) {
-                // Ignore if view is not attached
-            }
-            isPointerViewAttached = false
-        }
-        pointerImageView = null
-        params = null
-        windowManager = null
+        renderer?.destroy()
+        renderer = null
+        isShow = false
     }
 
     private fun startDisplayListener() {
+        if (displayListener != null) return
         displayListener = object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) {
                 // 新显示器插入，不需要处理
@@ -204,6 +160,7 @@ class PointerService : Service() {
     }
 
     private fun startOrientationListener() {
+        if (::orientationEventListener.isInitialized) return
         orientationEventListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
                 val rotation = getDeviceRotation()
@@ -223,14 +180,12 @@ class PointerService : Service() {
             if (!isShow) {
                 showPointer()
             }
-            updatePointerPosition(abs_x, abs_y)
+            renderer?.setPosition(abs_x, abs_y)
             if (downing_int == 1) {
-                pointerImageView?.scaleX = 0.95f
-                pointerImageView?.scaleY = 0.95f
+                renderer?.setScale(0.95f)
                 sendDeviceOrientation(getDeviceRotation())
             } else {
-                pointerImageView?.scaleX = 1.0f
-                pointerImageView?.scaleY = 1.0f
+                renderer?.setScale(1.0f)
             }
         } else {
             if (isShow) {
@@ -240,52 +195,14 @@ class PointerService : Service() {
     }
 
     private fun showPointer() {
-        if (!isPointerViewAttached && pointerImageView != null && params != null) {
-            try {
-                windowManager?.addView(pointerImageView, params)
-                isPointerViewAttached = true
-                sendDeviceOrientation(getDeviceRotation())
-                // 诊断：addView 之后查看窗口真正落在了哪块屏幕上
-                pointerImageView?.post {
-                    val actual = pointerImageView?.display
-                    android.util.Log.d(
-                        "PointerService",
-                        "DIAG after addView -> targetDisplayId=$targetDisplayId, " +
-                                "view.display.id=${actual?.displayId}, view.display.name=${actual?.name}"
-                    )
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("PointerService", "addView failed", e)
-                e.printStackTrace()
-            }
-        }
-        pointerImageView?.let { imageView ->
-            val animator = ObjectAnimator.ofFloat(imageView, "alpha", imageView.alpha, 1f)
-            animator.duration = 200
-            animator.start()
-        }
+        renderer?.show()
+        sendDeviceOrientation(getDeviceRotation())
         isShow = true
     }
 
     private fun removePointer() {
-        pointerImageView?.let { imageView ->
-            val animator = ObjectAnimator.ofFloat(imageView, "alpha", imageView.alpha, 0f)
-            animator.duration = 200
-            animator.start()
-        }
+        renderer?.hide()
         isShow = false
-    }
-
-    private fun updatePointerPosition(x: Int, y: Int) {
-        if (isPointerViewAttached && params != null) {
-            params?.x = x
-            params?.y = y
-            try {
-                windowManager?.updateViewLayout(pointerImageView, params)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
     }
 
     private fun getDeviceRotation(): Int {
@@ -294,7 +211,7 @@ class PointerService : Service() {
             displayManager.getDisplay(Display.DEFAULT_DISPLAY)
         } else {
             @Suppress("DEPRECATION")
-            windowManager?.defaultDisplay
+            (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
         }
         return display?.rotation ?: Surface.ROTATION_0
     }
@@ -335,5 +252,183 @@ class PointerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
+    }
+
+    // ---- 渲染器抽象 ----
+
+    private interface PointerRenderer {
+        fun show()
+        fun hide()
+        fun setPosition(x: Int, y: Int)
+        fun setScale(scale: Float)
+        fun destroy()
+    }
+
+    /** 创建光标 ImageView，左上角为锚点 */
+    private fun createPointerImageView(): ImageView {
+        return ImageView(this).apply {
+            setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
+            alpha = 0f
+            pivotX = 0f
+            pivotY = 0f
+        }
+    }
+
+    private fun fade(view: View, to: Float) {
+        val animator = ObjectAnimator.ofFloat(view, "alpha", view.alpha, to)
+        animator.duration = 200
+        animator.start()
+    }
+
+    /** 内置屏：WindowManager 覆盖层 */
+    private inner class OverlayRenderer(context: Context) : PointerRenderer {
+        private val windowManager =
+            context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        private val imageView = createPointerImageView()
+        private val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+        private var attached = false
+
+        override fun show() {
+            if (!attached) {
+                try {
+                    windowManager.addView(imageView, params)
+                    attached = true
+                } catch (e: Exception) {
+                    android.util.Log.e("PointerService", "Overlay addView failed", e)
+                }
+            }
+            fade(imageView, 1f)
+        }
+
+        override fun hide() {
+            fade(imageView, 0f)
+        }
+
+        override fun setPosition(x: Int, y: Int) {
+            if (!attached) return
+            params.x = x
+            params.y = y
+            try {
+                windowManager.updateViewLayout(imageView, params)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        override fun setScale(scale: Float) {
+            imageView.scaleX = scale
+            imageView.scaleY = scale
+        }
+
+        override fun destroy() {
+            if (attached) {
+                try {
+                    windowManager.removeView(imageView)
+                } catch (e: Exception) {
+                    // ignore
+                }
+                attached = false
+            }
+        }
+    }
+
+    /** 外接屏：Presentation（绑定到指定 Display） */
+    private inner class PresentationRenderer(
+        context: Context,
+        display: Display
+    ) : PointerRenderer {
+        private val imageView = createPointerImageView()
+        private val container = FrameLayout(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            addView(
+                imageView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.START
+                )
+            )
+        }
+        private val presentation = Presentation(context, display).apply {
+            setCancelable(false)
+            setContentView(container)
+            window?.apply {
+                // 从 Service（无 Activity）弹出 Presentation 需要覆盖层窗口类型 + 悬浮窗权限
+                setType(
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    else
+                        @Suppress("DEPRECATION")
+                        WindowManager.LayoutParams.TYPE_SYSTEM_ALERT
+                )
+                addFlags(
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                )
+                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setLayout(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT
+                )
+            }
+        }
+        private var shown = false
+
+        override fun show() {
+            if (!shown) {
+                try {
+                    presentation.show()
+                    shown = true
+                    android.util.Log.d(
+                        "PointerService",
+                        "Presentation shown on display ${presentation.display?.displayId}"
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.e("PointerService", "Presentation show failed", e)
+                }
+            }
+            fade(imageView, 1f)
+        }
+
+        override fun hide() {
+            fade(imageView, 0f)
+        }
+
+        override fun setPosition(x: Int, y: Int) {
+            imageView.translationX = x.toFloat()
+            imageView.translationY = y.toFloat()
+        }
+
+        override fun setScale(scale: Float) {
+            imageView.scaleX = scale
+            imageView.scaleY = scale
+        }
+
+        override fun destroy() {
+            try {
+                presentation.dismiss()
+            } catch (e: Exception) {
+                // ignore
+            }
+            shown = false
+        }
     }
 }
