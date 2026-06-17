@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.Display
 import android.view.Gravity
 import android.view.OrientationEventListener
@@ -280,6 +281,21 @@ class PointerService : Service() {
         animator.start()
     }
 
+    /**
+     * 计算目标显示器相对内置屏的密度缩放比例。
+     * 光标位图是固定像素尺寸，在低 DPI 大屏上会显得过大；按密度比例缩放后，
+     * 光标在外接屏上的物理大小与内置屏（手机）保持一致，无需用户手动调整。
+     */
+    private fun densityScaleFor(display: Display): Float {
+        val internalDpi = resources.displayMetrics.densityDpi
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val targetDpi = metrics.densityDpi
+        if (internalDpi <= 0 || targetDpi <= 0) return 1f
+        return targetDpi.toFloat() / internalDpi.toFloat()
+    }
+
     /** 内置屏：WindowManager 覆盖层 */
     private inner class OverlayRenderer(context: Context) : PointerRenderer {
         private val windowManager =
@@ -353,6 +369,8 @@ class PointerService : Service() {
         context: Context,
         display: Display
     ) : PointerRenderer {
+        // 按目标显示器密度缩放，使光标物理大小与内置屏一致
+        private val baseScale = densityScaleFor(display)
         private val imageView = createPointerImageView()
         private val container = FrameLayout(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -394,12 +412,14 @@ class PointerService : Service() {
                     shown = true
                     android.util.Log.d(
                         "PointerService",
-                        "Presentation shown on display ${presentation.display?.displayId}"
+                        "Presentation shown on display ${presentation.display?.displayId}, baseScale=$baseScale"
                     )
                 } catch (e: Exception) {
                     android.util.Log.e("PointerService", "Presentation show failed", e)
                 }
             }
+            imageView.scaleX = baseScale
+            imageView.scaleY = baseScale
             fade(imageView, 1f)
         }
 
@@ -413,8 +433,9 @@ class PointerService : Service() {
         }
 
         override fun setScale(scale: Float) {
-            imageView.scaleX = scale
-            imageView.scaleY = scale
+            // 按压系数叠加到密度基准缩放上
+            imageView.scaleX = baseScale * scale
+            imageView.scaleY = baseScale * scale
         }
 
         override fun destroy() {
