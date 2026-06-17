@@ -245,7 +245,17 @@ class PointerService : Service() {
                 windowManager?.addView(pointerImageView, params)
                 isPointerViewAttached = true
                 sendDeviceOrientation(getDeviceRotation())
+                // 诊断：addView 之后查看窗口真正落在了哪块屏幕上
+                pointerImageView?.post {
+                    val actual = pointerImageView?.display
+                    android.util.Log.d(
+                        "PointerService",
+                        "DIAG after addView -> targetDisplayId=$targetDisplayId, " +
+                                "view.display.id=${actual?.displayId}, view.display.name=${actual?.name}"
+                    )
+                }
             } catch (e: Exception) {
+                android.util.Log.e("PointerService", "addView failed", e)
                 e.printStackTrace()
             }
         }
