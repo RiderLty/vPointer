@@ -77,6 +77,11 @@ class PointerService : Service() {
         val display = displayManagerHelper.getDisplayById(targetDisplayId)
         android.util.Log.d("PointerService", "Display found: ${display?.displayId}, name: ${display?.name}")
 
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+
         // 如果目标显示器不存在，回退到默认显示器
         if (display == null) {
             android.util.Log.w("PointerService", "Target display not found, falling back to DEFAULT_DISPLAY")
@@ -84,13 +89,23 @@ class PointerService : Service() {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         } else {
             try {
-                android.util.Log.d("PointerService", "Creating display context for display: ${display.displayId}")
-                val displayContext = this.createDisplayContext(display)
-                android.util.Log.d("PointerService", "Display context created successfully")
-                windowManager = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                android.util.Log.d("PointerService", "WindowManager obtained from display context")
+                android.util.Log.d("PointerService", "Creating window context for display: ${display.displayId}")
+                // createDisplayContext 只调整资源指标，其 WindowManager 不持有绑定到目标
+                // 显示器的 window token，addView 的覆盖层窗口仍会落到默认显示器上。
+                // 必须使用 createWindowContext 才能把非 Activity 窗口正确添加到指定显示器。
+                val windowContext = when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+                        createWindowContext(display, overlayType, null)
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
+                        createDisplayContext(display).createWindowContext(overlayType, null)
+                    else ->
+                        createDisplayContext(display)
+                }
+                android.util.Log.d("PointerService", "Window context created successfully")
+                windowManager = windowContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                android.util.Log.d("PointerService", "WindowManager obtained from window context")
             } catch (e: Exception) {
-                android.util.Log.e("PointerService", "Failed to create display context", e)
+                android.util.Log.e("PointerService", "Failed to create window context", e)
                 targetDisplayId = Display.DEFAULT_DISPLAY
                 windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             }
@@ -99,7 +114,7 @@ class PointerService : Service() {
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+            overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
