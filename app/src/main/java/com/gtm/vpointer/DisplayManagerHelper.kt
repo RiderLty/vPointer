@@ -12,7 +12,9 @@ data class DisplayInfo(
     val width: Int,
     val height: Int,
     val isInternal: Boolean,
-    val state: Int
+    val state: Int,
+    val densityDpi: Int,
+    val refreshRate: Float
 )
 
 class DisplayManagerHelper(private val context: Context) {
@@ -29,7 +31,9 @@ class DisplayManagerHelper(private val context: Context) {
                 width = mode.physicalWidth,
                 height = mode.physicalHeight,
                 isInternal = display.displayId == Display.DEFAULT_DISPLAY,
-                state = display.state
+                state = display.state,
+                densityDpi = display.density,
+                refreshRate = display.refreshRate
             )
         }
     }

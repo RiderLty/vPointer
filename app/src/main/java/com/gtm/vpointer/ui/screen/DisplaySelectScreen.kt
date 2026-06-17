@@ -109,16 +109,31 @@ fun DisplayItem(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "${display.width} × ${display.height}",
+                    text = "${display.width} × ${display.height}  ·  ${display.densityDpi} dpi  ·  ${"%.1f".format(display.refreshRate)} Hz",
                     fontSize = 14.sp,
                     color = Color.Gray
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = if (display.isInternal) "内置显示器" else "外接显示器",
-                    fontSize = 12.sp,
-                    color = if (display.isInternal) Color.Blue else Color.Green
-                )
+                val stateText = when (display.state) {
+                    android.view.Display.STATE_ON -> "亮屏"
+                    android.view.Display.STATE_OFF -> "息屏"
+                    android.view.Display.STATE_DOZE -> "休眠"
+                    android.view.Display.STATE_DOZE_SUSPEND -> "休眠挂起"
+                    else -> "未知"
+                }
+                val stateColor = when (display.state) {
+                    android.view.Display.STATE_ON -> Color(0xFF4CAF50)
+                    android.view.Display.STATE_OFF -> Color.Gray
+                    else -> Color(0xFFFF9800)
+                }
+                val typeText = if (display.isInternal) "内置显示器" else "外接显示器"
+                val typeColor = if (display.isInternal) Color.Blue else Color.Green
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "ID: ${display.displayId}  ·  ", fontSize = 12.sp, color = Color.Gray)
+                    Text(text = stateText, fontSize = 12.sp, color = stateColor)
+                    Text(text = "  ·  ", fontSize = 12.sp, color = Color.Gray)
+                    Text(text = typeText, fontSize = 12.sp, color = typeColor)
+                }
             }
 
             if (isSelected) {
