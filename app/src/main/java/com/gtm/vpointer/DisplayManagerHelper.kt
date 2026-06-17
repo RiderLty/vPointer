@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.Display
 
 data class DisplayInfo(
@@ -25,6 +26,9 @@ class DisplayManagerHelper(private val context: Context) {
     fun getAllDisplays(): List<DisplayInfo> {
         return displayManager.displays.map { display ->
             val mode = display.mode
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
             DisplayInfo(
                 displayId = display.displayId,
                 name = display.name ?: "Unknown Display",
@@ -32,7 +36,7 @@ class DisplayManagerHelper(private val context: Context) {
                 height = mode.physicalHeight,
                 isInternal = display.displayId == Display.DEFAULT_DISPLAY,
                 state = display.state,
-                densityDpi = display.density,
+                densityDpi = metrics.densityDpi,
                 refreshRate = display.refreshRate
             )
         }
