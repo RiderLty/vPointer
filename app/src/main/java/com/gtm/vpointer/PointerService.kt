@@ -369,14 +369,9 @@ class PointerService : Service() {
             setCancelable(false)
             setContentView(container)
             window?.apply {
-                // 从 Service（无 Activity）弹出 Presentation 需要覆盖层窗口类型 + 悬浮窗权限
-                setType(
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                    else
-                        @Suppress("DEPRECATION")
-                        WindowManager.LayoutParams.TYPE_SYSTEM_ALERT
-                )
+                // 不要调用 setType 覆盖窗口类型：Presentation 内部已用
+                // TYPE_PRESENTATION(2037) 创建了绑定到目标 Display 的 window context，
+                // 强行改成 TYPE_APPLICATION_OVERLAY(2038) 会导致 window type mismatch 异常。
                 addFlags(
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
