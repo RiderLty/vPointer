@@ -423,6 +423,16 @@ class PointerService : Service() {
                         "PointerService",
                         "Presentation shown on display ${presentation.display?.displayId}, baseScale=$baseScale"
                     )
+                    // 双重防护：FLAG_NOT_TOUCHABLE 在 Window 级别，但 Dialog 的 DecorView
+                    // 默认实现仍可能消费触摸事件。在 View 层面也显式禁用，确保触摸穿透。
+                    presentation.window?.decorView?.apply {
+                        isClickable = false
+                        isFocusable = false
+                        setOnTouchListener { _, _ -> false }
+                    }
+                    container.isClickable = false
+                    container.isFocusable = false
+                    container.setOnTouchListener { _, _ -> false }
                 } catch (e: Exception) {
                     android.util.Log.e("PointerService", "Presentation show failed", e)
                 }
@@ -443,6 +453,11 @@ class PointerService : Service() {
             val lp = window.attributes
             lp.x = x
             lp.y = y
+            // 显式重置 flags，确保某些 ROM 在 attributes 赋回时不会丢失标志
+            lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
             try {
                 window.attributes = lp
             } catch (e: Exception) {
