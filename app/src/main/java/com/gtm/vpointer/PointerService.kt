@@ -393,14 +393,23 @@ class PointerService : Service() {
                 addFlags(
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                 )
                 clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                 setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                // 关键：窗口设为光标大小(WRAP_CONTENT)并按坐标移动，而非全屏容器。
+                // 全屏 Presentation 窗口即使带 FLAG_NOT_TOUCHABLE 也会拦截外接屏触摸，
+                // 改成跟随坐标的小窗口后，行为与内置屏 OverlayRenderer 一致，触摸正常穿透。
                 setLayout(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT
                 )
+                val lp = attributes
+                lp.gravity = Gravity.TOP or Gravity.START
+                lp.x = 0
+                lp.y = 0
+                attributes = lp
             }
         }
         private var shown = false
@@ -428,8 +437,17 @@ class PointerService : Service() {
         }
 
         override fun setPosition(x: Int, y: Int) {
-            imageView.translationX = x.toFloat()
-            imageView.translationY = y.toFloat()
+            // 移动整个光标小窗口，而非在全屏窗口内 translation，
+            // 这样窗口仅覆盖光标自身像素，外接屏其余区域触摸正常穿透。
+            val window = presentation.window ?: return
+            val lp = window.attributes
+            lp.x = x
+            lp.y = y
+            try {
+                window.attributes = lp
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
 
         override fun setScale(scale: Float) {
