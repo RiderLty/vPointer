@@ -408,7 +408,7 @@ class PointerService : Service() {
         private val baseScale = densityScaleFor(display)
         // 光标窗口偏移量：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
         // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
-        private companion object { const val CURSOR_OFFSET_PX = 4 }
+        private val cursorOffsetPx = 4
         private val imageView = createPointerImageView()
         private val container = FrameLayout(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -491,8 +491,8 @@ class PointerService : Service() {
             val lp = window.attributes
             // 光标偏移 4px：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
             // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
-            lp.x = x + CURSOR_OFFSET_PX
-            lp.y = y + CURSOR_OFFSET_PX
+            lp.x = x + cursorOffsetPx
+            lp.y = y + cursorOffsetPx
             // 显式重置 flags，确保某些 ROM 在 attributes 赋回时不会丢失标志
             lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
