@@ -28,6 +28,8 @@ import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class PointerService : Service() {
 
@@ -37,6 +39,7 @@ class PointerService : Service() {
     private var isShow = false
 
     private val socket = DatagramSocket(6533)
+    private val socket6534 = DatagramSocket(6534)
     private val clients = mutableSetOf<Pair<InetAddress, Int>>()
     private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
@@ -67,6 +70,7 @@ class PointerService : Service() {
         }
 
         startUdpReceiver()
+        startBinaryUdpReceiver()
         startOrientationListener()
         startDisplayListener()
 
@@ -160,6 +164,36 @@ class PointerService : Service() {
         }
     }
 
+    // 6534 端口：二进制协议，vmouse_t 结构体（小端序）
+    // struct vmouse_t { int32_t x; int32_t y; uint8_t state; } // 9 bytes
+    // state: bit0=show, bit1=down
+    private fun startBinaryUdpReceiver() {
+        GlobalScope.launch {
+            val buffer = ByteArray(9)
+            while (true) {
+                try {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket6534.receive(packet)
+                    clients.add(Pair(packet.address, packet.port))
+                    if (packet.length == 9) {
+                        val bb = ByteBuffer.wrap(packet.data).order(ByteOrder.LITTLE_ENDIAN)
+                        val x = bb.getInt()
+                        val y = bb.getInt()
+                        val state = bb.get().toInt() and 0xFF
+                        val show = state and 0x01
+                        val down = (state shr 1) and 0x01
+
+                        Handler(Looper.getMainLooper()).post {
+                            handlePointer(x, y, show, down)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
     private fun startOrientationListener() {
         if (::orientationEventListener.isInitialized) return
         orientationEventListener = object : OrientationEventListener(this) {
@@ -242,6 +276,7 @@ class PointerService : Service() {
         super.onDestroy()
         removeExistingPointer()
         socket.close()
+        socket6534.close()
         if (::orientationEventListener.isInitialized) {
             orientationEventListener.disable()
         }
