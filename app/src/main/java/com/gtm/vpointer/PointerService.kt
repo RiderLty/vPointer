@@ -29,6 +29,7 @@ import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
@@ -44,7 +45,12 @@ class PointerService : Service() {
     private val socket = DatagramSocket(6533)
     private val socket6534 = DatagramSocket(6534)
     private val serverSocket = ServerSocket(6535)
-    private val clients = mutableSetOf<Pair<InetAddress, Int>>()
+
+    // 记录 UDP 客户端及其所在的本地网卡 IP，发包时绑定到该网卡
+    private data class ClientInfo(val remoteAddr: InetAddress, val remotePort: Int, val localAddr: InetAddress?)
+    private val clients = mutableSetOf<ClientInfo>()
+    // 按本地 IP 缓存的发送 socket，避免每次创建
+    private val sendSockets = mutableMapOf<InetAddress, DatagramSocket>()
     private val tcpClients = mutableSetOf<OutputStream>()
     private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
@@ -52,6 +58,45 @@ class PointerService : Service() {
     private var targetDisplayId = Display.DEFAULT_DISPLAY
     private lateinit var displayManagerHelper: DisplayManagerHelper
     private var displayListener: DisplayManager.DisplayListener? = null
+
+    /**
+     * 通过远端 IP 反查应该使用的本地网卡 IP。
+     * 遍历本机所有网络接口，找到子网匹配（远端 IP 在该接口的子网内）的接口，
+     * 返回其本地 IP。发送时绑定到该 IP 即可强制走对应网卡。
+     */
+    private fun findLocalAddressFor(remote: InetAddress): InetAddress? {
+        try {
+            val remoteBytes = remote.address
+            for (ni in NetworkInterface.getNetworkInterfaces()) {
+                if (!ni.isUp || ni.isLoopback) continue
+                for (ia in ni.interfaceAddresses) {
+                    val localAddr = ia.address ?: continue
+                    // 只匹配同类型（IPv4 对 IPv4）
+                    if (localAddr.javaClass != remote.javaClass) continue
+                    val prefix = ia.networkPrefixLength
+                    val localBytes = localAddr.address
+                    if (localBytes.size != remoteBytes.size) continue
+                    // 按 prefix length 计算掩码，比较网络部分
+                    val fullBytes = prefix / 8
+                    val remainBits = prefix % 8
+                    var match = true
+                    for (i in 0 until fullBytes) {
+                        if (localBytes[i] != remoteBytes[i]) { match = false; break }
+                    }
+                    if (match && remainBits > 0 && fullBytes < localBytes.size) {
+                        val mask = (0xFF shl (8 - remainBits)) and 0xFF
+                        if ((localBytes[fullBytes].toInt() and mask) != (remoteBytes[fullBytes].toInt() and mask)) {
+                            match = false
+                        }
+                    }
+                    if (match) return localAddr
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("PointerService", "findLocalAddressFor failed", e)
+        }
+        return null
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -150,7 +195,8 @@ class PointerService : Service() {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket.receive(packet)
-                    clients.add(Pair(packet.address, packet.port))
+                    val localAddr = findLocalAddressFor(packet.address)
+                    clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     val data = String(packet.data, 0, packet.length)
                     val values = data.split(",")
                     if (values.size == 5) {
@@ -180,7 +226,8 @@ class PointerService : Service() {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket6534.receive(packet)
-                    clients.add(Pair(packet.address, packet.port))
+                    val localAddr = findLocalAddressFor(packet.address)
+                    clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     if (packet.length == 9) {
                         val bb = ByteBuffer.wrap(packet.data).order(ByteOrder.LITTLE_ENDIAN)
                         val x = bb.getInt()
@@ -352,13 +399,20 @@ class PointerService : Service() {
             else -> 0x00
         }
         GlobalScope.launch {
-            clients.forEach { (address, port) ->
+            val data = byteArrayOf(orientationByte)
+            clients.forEach { client ->
                 try {
-                    val data = byteArrayOf(orientationByte)
-                    val packet = DatagramPacket(data, data.size, address, port)
-                    socket.send(packet)
+                    val packet = DatagramPacket(data, data.size, client.remoteAddr, client.remotePort)
+                    // 绑定到接收该客户端数据的本地网卡发包，解决多网卡路由问题
+                    val sendSocket = client.localAddr?.let { localAddr ->
+                        sendSockets.getOrPut(localAddr) {
+                            DatagramSocket(0, localAddr)
+                        }
+                    } ?: socket  // 找不到本地地址时 fallback 到默认 socket
+                    sendSocket.send(packet)
                 } catch (e: Exception) {
-                    // Ignore send errors
+                    // 发送失败时移除该客户端
+                    clients.remove(client)
                 }
             }
             val tcpData = byteArrayOf(orientationByte)
@@ -380,6 +434,8 @@ class PointerService : Service() {
         removeExistingPointer()
         socket.close()
         socket6534.close()
+        sendSockets.values.forEach { try { it.close() } catch (_: Exception) {} }
+        sendSockets.clear()
         serverSocket.close()
         tcpClients.forEach { try { it.close() } catch (_: Exception) {} }
         tcpClients.clear()
