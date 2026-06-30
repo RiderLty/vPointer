@@ -67,6 +67,7 @@ class PointerService : Service() {
     private fun findLocalAddressFor(remote: InetAddress): InetAddress? {
         try {
             val remoteBytes = remote.address
+            val remoteStr = remote.hostAddress
             for (ni in NetworkInterface.getNetworkInterfaces()) {
                 if (!ni.isUp || ni.isLoopback) continue
                 for (ia in ni.interfaceAddresses) {
@@ -89,11 +90,15 @@ class PointerService : Service() {
                             match = false
                         }
                     }
-                    if (match) return localAddr
+                    if (match) {
+                        android.util.Log.d("PointerService", "findLocalAddressFor $remoteStr → matched interface=${ni.name} localAddr=${localAddr.hostAddress}/$prefix")
+                        return localAddr
+                    }
                 }
             }
+            android.util.Log.w("PointerService", "findLocalAddressFor $remoteStr → no matching interface found, will use default route")
         } catch (e: Exception) {
-            android.util.Log.w("PointerService", "findLocalAddressFor failed", e)
+            android.util.Log.w("PointerService", "findLocalAddressFor error", e)
         }
         return null
     }
@@ -197,20 +202,25 @@ class PointerService : Service() {
                     socket.receive(packet)
                     val localAddr = findLocalAddressFor(packet.address)
                     clients.add(ClientInfo(packet.address, packet.port, localAddr))
-                    val data = String(packet.data, 0, packet.length)
+                    val rawLen = packet.length
+                    val data = String(packet.data, 0, rawLen)
+                    android.util.Log.d("PointerService", "UDP:6533 recv from ${packet.address.hostAddress}:${packet.port} localAddr=${localAddr?.hostAddress} rawLen=$rawLen data=\"$data\"")
                     val values = data.split(",")
                     if (values.size == 5) {
                         val abs_x = values[0].toInt()
                         val abs_y = values[1].toInt()
                         val show_int = values[2].toInt()
                         val downing_int = values[3].toInt()
+                        android.util.Log.d("PointerService", "UDP:6533 parsed x=$abs_x y=$abs_y show=$show_int down=$downing_int")
 
                         Handler(Looper.getMainLooper()).post {
                             handlePointer(abs_x, abs_y, show_int, downing_int)
                         }
+                    } else {
+                        android.util.Log.w("PointerService", "UDP:6533 bad format: expected 5 fields, got ${values.size}")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.e("PointerService", "UDP:6533 error", e)
                 }
             }
         }
@@ -228,20 +238,26 @@ class PointerService : Service() {
                     socket6534.receive(packet)
                     val localAddr = findLocalAddressFor(packet.address)
                     clients.add(ClientInfo(packet.address, packet.port, localAddr))
-                    if (packet.length == 9) {
+                    val rawLen = packet.length
+                    val hexDump = packet.data.take(rawLen).joinToString(" ") { "%02X".format(it) }
+                    android.util.Log.d("PointerService", "UDP:6534 recv from ${packet.address.hostAddress}:${packet.port} localAddr=${localAddr?.hostAddress} len=$rawLen hex=[$hexDump]")
+                    if (rawLen == 9) {
                         val bb = ByteBuffer.wrap(packet.data).order(ByteOrder.LITTLE_ENDIAN)
                         val x = bb.getInt()
                         val y = bb.getInt()
                         val state = bb.get().toInt() and 0xFF
                         val show = state and 0x01
                         val down = (state shr 1) and 0x01
+                        android.util.Log.d("PointerService", "UDP:6534 parsed x=$x y=$y state=0x%02X show=$show down=$down".format(state))
 
                         Handler(Looper.getMainLooper()).post {
                             handlePointer(x, y, show, down)
                         }
+                    } else {
+                        android.util.Log.w("PointerService", "UDP:6534 bad length: expected 9, got $rawLen")
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.e("PointerService", "UDP:6534 error", e)
                 }
             }
         }
@@ -253,39 +269,56 @@ class PointerService : Service() {
     // 连接建立后也会上报屏幕方向
     private fun startTcpServer() {
         GlobalScope.launch {
+            android.util.Log.d("PointerService", "TCP:6535 server started, waiting for connections")
             while (true) {
                 try {
                     val clientSocket = serverSocket.accept()
+                    val remoteAddr = clientSocket.remoteSocketAddress
                     tcpClients.add(clientSocket.getOutputStream())
-                    android.util.Log.d("PointerService", "TCP client connected from ${clientSocket.remoteSocketAddress}")
+                    android.util.Log.d("PointerService", "TCP:6535 client connected from $remoteAddr, total=${tcpClients.size}")
                     // 立即发送当前屏幕方向
+                    val rotation = getDeviceRotation()
+                    android.util.Log.d("PointerService", "TCP:6535 sending initial orientation=$rotation to $remoteAddr")
                     sendTcpOrientation(clientSocket.getOutputStream())
                     launch { handleTcpClient(clientSocket) }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    android.util.Log.e("PointerService", "TCP:6535 accept error", e)
                 }
             }
         }
     }
 
     private suspend fun handleTcpClient(clientSocket: Socket) {
+        val remote = clientSocket.remoteSocketAddress
         try {
             val input = clientSocket.getInputStream()
             val header = ByteArray(2)
             val body = ByteArray(9)
+            var packetCount = 0
+            var syncCount = 0
             while (true) {
                 // 读取 2 字节 header，必须为 0x55 0xAA，否则丢弃直到同步
-                if (!readFully(input, header)) break
+                if (!readFully(input, header)) {
+                    android.util.Log.d("PointerService", "TCP:6535 $remote read header EOF")
+                    break
+                }
                 if (header[0] != 0x55.toByte() || header[1] != 0xAA.toByte()) {
+                    syncCount++
+                    android.util.Log.d("PointerService", "TCP:6535 $remote sync miss #$syncCount, got [%02X %02X]".format(header[0].toInt() and 0xFF, header[1].toInt() and 0xFF))
                     // header 不匹配，逐字节滑动窗口重新同步
                     header[0] = header[1]
-                    if (input.read() == -1) break
-                    header[1] = input.read().toByte()
+                    val b = input.read()
+                    if (b == -1) break
+                    header[1] = b.toByte()
                     if (header[1] == (-1).toByte()) break
                     continue
                 }
                 // 读取 9 字节 vmouse_t
-                if (!readFully(input, body)) break
+                if (!readFully(input, body)) {
+                    android.util.Log.d("PointerService", "TCP:6535 $remote read body EOF")
+                    break
+                }
+                packetCount++
 
                 val bb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
                 val x = bb.getInt()
@@ -293,15 +326,19 @@ class PointerService : Service() {
                 val state = bb.get().toInt() and 0xFF
                 val show = state and 0x01
                 val down = (state shr 1) and 0x01
+                val hexDump = body.joinToString(" ") { "%02X".format(it) }
+                android.util.Log.d("PointerService", "TCP:6535 $remote #$packetCount hex=[$hexDump] x=$x y=$y state=0x%02X show=$show down=$down".format(state))
 
                 Handler(Looper.getMainLooper()).post {
                     handlePointer(x, y, show, down)
                 }
             }
+            android.util.Log.d("PointerService", "TCP:6535 $remote stream ended, packets=$packetCount syncMisses=$syncCount")
         } catch (e: Exception) {
-            android.util.Log.d("PointerService", "TCP client disconnected: ${e.message}")
+            android.util.Log.d("PointerService", "TCP:6535 $remote disconnected: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
             tcpClients.remove(clientSocket.getOutputStream())
+            android.util.Log.d("PointerService", "TCP:6535 $remote cleaned up, remaining=${tcpClients.size}")
             try { clientSocket.close() } catch (_: Exception) {}
         }
     }
@@ -328,8 +365,9 @@ class PointerService : Service() {
             }
             output.write(byteArrayOf(orientationByte))
             output.flush()
+            android.util.Log.d("PointerService", "TCP:6535 sent orientation=$rotation byte=0x%02X".format(orientationByte.toInt() and 0xFF))
         } catch (e: Exception) {
-            // 忽略发送错误
+            android.util.Log.w("PointerService", "TCP:6535 send orientation failed: ${e.message}")
         }
     }
 
@@ -350,6 +388,7 @@ class PointerService : Service() {
     }
 
     private fun handlePointer(abs_x: Int, abs_y: Int, show_int: Int, downing_int: Int) {
+        android.util.Log.d("PointerService", "handlePointer x=$abs_x y=$abs_y show=$show_int down=$downing_int renderer=${renderer?.javaClass?.simpleName}")
         if (show_int == 1) {
             if (!isShow) {
                 showPointer()
@@ -398,23 +437,28 @@ class PointerService : Service() {
             Surface.ROTATION_270 -> 0x03
             else -> 0x00
         }
+        android.util.Log.d("PointerService", "sendDeviceOrientation rotation=$rotation byte=0x%02X udpClients=${clients.size} tcpClients=${tcpClients.size}".format(orientationByte.toInt() and 0xFF))
         GlobalScope.launch {
             val data = byteArrayOf(orientationByte)
+            val deadClients = mutableListOf<ClientInfo>()
             clients.forEach { client ->
                 try {
                     val packet = DatagramPacket(data, data.size, client.remoteAddr, client.remotePort)
                     // 绑定到接收该客户端数据的本地网卡发包，解决多网卡路由问题
                     val sendSocket = client.localAddr?.let { localAddr ->
                         sendSockets.getOrPut(localAddr) {
+                            android.util.Log.d("PointerService", "UDP sendSocket created for localAddr=${localAddr.hostAddress}")
                             DatagramSocket(0, localAddr)
                         }
                     } ?: socket  // 找不到本地地址时 fallback 到默认 socket
                     sendSocket.send(packet)
+                    android.util.Log.d("PointerService", "UDP sent orientation=0x%02X to ${client.remoteAddr.hostAddress}:${client.remotePort} via ${client.localAddr?.hostAddress ?: "default"}".format(orientationByte.toInt() and 0xFF))
                 } catch (e: Exception) {
-                    // 发送失败时移除该客户端
-                    clients.remove(client)
+                    android.util.Log.w("PointerService", "UDP send failed to ${client.remoteAddr.hostAddress}:${client.remotePort}: ${e.message}, removing client")
+                    deadClients.add(client)
                 }
             }
+            clients.removeAll(deadClients.toSet())
             val tcpData = byteArrayOf(orientationByte)
             val dead = mutableListOf<OutputStream>()
             tcpClients.forEach { output ->
@@ -424,6 +468,9 @@ class PointerService : Service() {
                 } catch (e: Exception) {
                     dead.add(output)
                 }
+            }
+            if (dead.isNotEmpty()) {
+                android.util.Log.d("PointerService", "TCP orientation send failed to ${dead.size} client(s), removing")
             }
             tcpClients.removeAll(dead.toSet())
         }
