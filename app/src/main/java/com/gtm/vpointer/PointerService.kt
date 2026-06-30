@@ -227,8 +227,16 @@ class PointerService : Service() {
             val header = ByteArray(2)
             val body = ByteArray(9)
             while (true) {
-                // 读取 2 字节 header
+                // 读取 2 字节 header，必须为 0x55 0xAA，否则丢弃直到同步
                 if (!readFully(input, header)) break
+                if (header[0] != 0x55.toByte() || header[1] != 0xAA.toByte()) {
+                    // header 不匹配，逐字节滑动窗口重新同步
+                    header[0] = header[1]
+                    if (input.read() == -1) break
+                    header[1] = input.read().toByte()
+                    if (header[1] == (-1).toByte()) break
+                    continue
+                }
                 // 读取 9 字节 vmouse_t
                 if (!readFully(input, body)) break
 
