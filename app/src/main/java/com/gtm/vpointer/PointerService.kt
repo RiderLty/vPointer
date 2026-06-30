@@ -25,9 +25,12 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -40,7 +43,9 @@ class PointerService : Service() {
 
     private val socket = DatagramSocket(6533)
     private val socket6534 = DatagramSocket(6534)
+    private val serverSocket = ServerSocket(6535)
     private val clients = mutableSetOf<Pair<InetAddress, Int>>()
+    private val tcpClients = mutableSetOf<OutputStream>()
     private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
 
@@ -71,6 +76,7 @@ class PointerService : Service() {
 
         startUdpReceiver()
         startBinaryUdpReceiver()
+        startTcpServer()
         startOrientationListener()
         startDisplayListener()
 
@@ -194,6 +200,84 @@ class PointerService : Service() {
         }
     }
 
+    // 6535 端口：TCP 二进制协议，支持多个客户端连接
+    // 数据格式：2字节 header + 9字节 vmouse_t = 11字节
+    // header 内容忽略，vmouse_t 与 6534 端口格式一致（小端序）
+    // 连接建立后也会上报屏幕方向
+    private fun startTcpServer() {
+        GlobalScope.launch {
+            while (true) {
+                try {
+                    val clientSocket = serverSocket.accept()
+                    tcpClients.add(clientSocket.getOutputStream())
+                    android.util.Log.d("PointerService", "TCP client connected from ${clientSocket.remoteSocketAddress}")
+                    // 立即发送当前屏幕方向
+                    sendTcpOrientation(clientSocket.getOutputStream())
+                    launch { handleTcpClient(clientSocket) }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    private suspend fun handleTcpClient(clientSocket: Socket) {
+        try {
+            val input = clientSocket.getInputStream()
+            val header = ByteArray(2)
+            val body = ByteArray(9)
+            while (true) {
+                // 读取 2 字节 header
+                if (!readFully(input, header)) break
+                // 读取 9 字节 vmouse_t
+                if (!readFully(input, body)) break
+
+                val bb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
+                val x = bb.getInt()
+                val y = bb.getInt()
+                val state = bb.get().toInt() and 0xFF
+                val show = state and 0x01
+                val down = (state shr 1) and 0x01
+
+                Handler(Looper.getMainLooper()).post {
+                    handlePointer(x, y, show, down)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.d("PointerService", "TCP client disconnected: ${e.message}")
+        } finally {
+            tcpClients.remove(clientSocket.getOutputStream())
+            try { clientSocket.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
+        var offset = 0
+        while (offset < buf.size) {
+            val read = input.read(buf, offset, buf.size - offset)
+            if (read == -1) return false
+            offset += read
+        }
+        return true
+    }
+
+    private fun sendTcpOrientation(output: OutputStream) {
+        try {
+            val rotation = getDeviceRotation()
+            val orientationByte: Byte = when (rotation) {
+                Surface.ROTATION_0 -> 0x00
+                Surface.ROTATION_90 -> 0x01
+                Surface.ROTATION_180 -> 0x02
+                Surface.ROTATION_270 -> 0x03
+                else -> 0x00
+            }
+            output.write(byteArrayOf(orientationByte))
+            output.flush()
+        } catch (e: Exception) {
+            // 忽略发送错误
+        }
+    }
+
     private fun startOrientationListener() {
         if (::orientationEventListener.isInitialized) return
         orientationEventListener = object : OrientationEventListener(this) {
@@ -269,6 +353,17 @@ class PointerService : Service() {
                     // Ignore send errors
                 }
             }
+            val tcpData = byteArrayOf(orientationByte)
+            val dead = mutableListOf<OutputStream>()
+            tcpClients.forEach { output ->
+                try {
+                    output.write(tcpData)
+                    output.flush()
+                } catch (e: Exception) {
+                    dead.add(output)
+                }
+            }
+            tcpClients.removeAll(dead.toSet())
         }
     }
 
@@ -277,6 +372,9 @@ class PointerService : Service() {
         removeExistingPointer()
         socket.close()
         socket6534.close()
+        serverSocket.close()
+        tcpClients.forEach { try { it.close() } catch (_: Exception) {} }
+        tcpClients.clear()
         if (::orientationEventListener.isInitialized) {
             orientationEventListener.disable()
         }
