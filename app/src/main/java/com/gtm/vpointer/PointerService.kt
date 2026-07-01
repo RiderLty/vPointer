@@ -44,6 +44,11 @@ class PointerService : Service() {
         const val STATUS_RUNNING = "running"
         const val STATUS_ERROR = "error"
         const val STATUS_STOPPED = "stopped"
+
+        // TCP header 同步状态机
+        private const val TCP_STATE_SYNC = 0      // 等待 0x55
+        private const val TCP_STATE_HEADER = 1    // 已收到 0x55，等待 0xAA
+        private const val TCP_STATE_BODY = 2      // header 完成，读取 9 字节 body
     }
 
     // 抽象出渲染器：内置屏用 WindowManager 覆盖层，外接屏用 Presentation
@@ -341,13 +346,6 @@ class PointerService : Service() {
                 }
             }
         }
-    }
-
-    // TCP header 同步状态机：逐字节扫描，单字节错误不会破坏后续同步
-    private companion object {
-        const val TCP_STATE_SYNC = 0      // 等待 0x55
-        const val TCP_STATE_HEADER = 1    // 已收到 0x55，等待 0xAA
-        const val TCP_STATE_BODY = 2      // header 完成，读取 9 字节 body
     }
 
     private suspend fun handleTcpClient(clientSocket: Socket) {
