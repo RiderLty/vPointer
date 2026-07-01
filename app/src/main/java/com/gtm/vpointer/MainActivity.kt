@@ -1,6 +1,9 @@
 package com.gtm.vpointer
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -10,12 +13,30 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import com.gtm.vpointer.ui.screen.DisplaySelectScreen
+import com.gtm.vpointer.ui.screen.ServiceState
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var displayManagerHelper: DisplayManagerHelper
     private var displays by mutableStateOf<List<DisplayInfo>>(emptyList())
     private var selectedDisplayId by mutableStateOf<Int?>(null)
+    private var serviceState by mutableStateOf(ServiceState.IDLE)
+    private var serviceMessage by mutableStateOf("")
+
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val status = intent.getStringExtra(PointerService.EXTRA_STATUS) ?: return
+            val message = intent.getStringExtra(PointerService.EXTRA_MESSAGE) ?: ""
+            android.util.Log.d("MainActivity", "Status received: $status - $message")
+            serviceMessage = message
+            serviceState = when (status) {
+                PointerService.STATUS_RUNNING -> ServiceState.RUNNING
+                PointerService.STATUS_ERROR -> ServiceState.ERROR
+                PointerService.STATUS_STOPPED -> ServiceState.IDLE
+                else -> serviceState
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,11 +58,21 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 注册服务状态广播
+        val filter = IntentFilter(PointerService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(statusReceiver, filter)
+        }
+
         setContent {
             MaterialTheme {
                 DisplaySelectScreen(
                     displays = displays,
                     selectedDisplayId = selectedDisplayId,
+                    serviceState = serviceState,
+                    serviceMessage = serviceMessage,
                     onDisplaySelected = { displayId ->
                         selectedDisplayId = displayId
                     },
@@ -55,6 +86,9 @@ class MainActivity : ComponentActivity() {
                         } else {
                             startPointerService()
                         }
+                    },
+                    onStopService = {
+                        stopService(Intent(this, PointerService::class.java))
                     }
                 )
             }
@@ -76,15 +110,17 @@ class MainActivity : ComponentActivity() {
             return
         }
         android.util.Log.d("MainActivity", "Starting PointerService with displayId: $displayId")
+        serviceState = ServiceState.IDLE
+        serviceMessage = ""
         val serviceIntent = Intent(this, PointerService::class.java).apply {
             putExtra(EXTRA_DISPLAY_ID, displayId)
         }
         startService(serviceIntent)
-        android.util.Log.d("MainActivity", "PointerService started")
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         displayManagerHelper.unregisterDisplayListener()
     }
 

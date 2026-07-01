@@ -17,12 +17,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gtm.vpointer.DisplayInfo
 
+enum class ServiceState { IDLE, RUNNING, ERROR }
+
 @Composable
 fun DisplaySelectScreen(
     displays: List<DisplayInfo>,
     selectedDisplayId: Int?,
+    serviceState: ServiceState,
+    serviceMessage: String,
     onDisplaySelected: (Int) -> Unit,
-    onStartService: () -> Unit
+    onStartService: () -> Unit,
+    onStopService: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -57,15 +62,42 @@ fun DisplaySelectScreen(
             }
         }
 
-        Button(
-            onClick = onStartService,
-            enabled = selectedDisplayId != null,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 16.dp)
-                .height(50.dp)
-        ) {
-            Text("启动服务", fontSize = 16.sp)
+        // 状态信息
+        if (serviceState == ServiceState.ERROR && serviceMessage.isNotEmpty()) {
+            Text(
+                text = serviceMessage,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        }
+
+        // 按钮区域
+        when (serviceState) {
+            ServiceState.RUNNING -> {
+                Button(
+                    onClick = onStopService,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp)
+                        .height(50.dp)
+                ) {
+                    Text("停止服务", fontSize = 16.sp)
+                }
+            }
+            else -> {
+                Button(
+                    onClick = onStartService,
+                    enabled = selectedDisplayId != null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp)
+                        .height(50.dp)
+                ) {
+                    Text("启动服务", fontSize = 16.sp)
+                }
+            }
         }
     }
 }

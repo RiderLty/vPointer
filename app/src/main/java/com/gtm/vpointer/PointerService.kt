@@ -37,14 +37,24 @@ import java.nio.ByteOrder
 
 class PointerService : Service() {
 
+    companion object {
+        const val ACTION_STATUS = "com.gtm.vpointer.SERVICE_STATUS"
+        const val EXTRA_STATUS = "status"
+        const val EXTRA_MESSAGE = "message"
+        const val STATUS_RUNNING = "running"
+        const val STATUS_ERROR = "error"
+        const val STATUS_STOPPED = "stopped"
+    }
+
     // 抽象出渲染器：内置屏用 WindowManager 覆盖层，外接屏用 Presentation
     private var renderer: PointerRenderer? = null
 
     private var isShow = false
 
-    private val socket = DatagramSocket(6533)
-    private val socket6534 = DatagramSocket(6534)
-    private val serverSocket = ServerSocket(6535)
+    // 延迟到 onCreate 创建，失败时可回滚
+    private var socket: DatagramSocket? = null
+    private var socket6534: DatagramSocket? = null
+    private var serverSocket: ServerSocket? = null
 
     // 记录 UDP 客户端及其所在的本地网卡 IP，发包时绑定到该网卡
     private data class ClientInfo(val remoteAddr: InetAddress, val remotePort: Int, val localAddr: InetAddress?)
@@ -106,6 +116,32 @@ class PointerService : Service() {
     override fun onCreate() {
         super.onCreate()
         displayManagerHelper = DisplayManagerHelper(this)
+
+        // 尝试绑定三个端口，任意一个失败则全部回滚
+        try {
+            socket = DatagramSocket(6533)
+            socket6534 = DatagramSocket(6534)
+            serverSocket = ServerSocket(6535)
+        } catch (e: Exception) {
+            android.util.Log.e("PointerService", "Port binding failed, rolling back", e)
+            socket?.close(); socket = null
+            socket6534?.close(); socket6534 = null
+            serverSocket?.close(); serverSocket = null
+            sendStatusBroadcast(STATUS_ERROR, "端口绑定失败: ${e.message}")
+            stopSelf()
+            return
+        }
+        android.util.Log.d("PointerService", "All ports bound: 6533/6534/6535")
+    }
+
+    private fun sendStatusBroadcast(status: String, message: String) {
+        android.util.Log.d("PointerService", "Status: $status - $message")
+        val intent = Intent(ACTION_STATUS).apply {
+            putExtra(EXTRA_STATUS, status)
+            putExtra(EXTRA_MESSAGE, message)
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -130,6 +166,7 @@ class PointerService : Service() {
         startOrientationListener()
         startDisplayListener()
 
+        sendStatusBroadcast(STATUS_RUNNING, "服务运行中 (6533/6534/6535)")
         android.util.Log.d("PointerService", "onStartCommand completed, returning START_STICKY")
         return START_STICKY
     }
@@ -194,12 +231,13 @@ class PointerService : Service() {
     }
 
     private fun startUdpReceiver() {
+        val sock = socket ?: return
         GlobalScope.launch {
             val buffer = ByteArray(1024)
             while (true) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
+                    sock.receive(packet)
                     val localAddr = findLocalAddressFor(packet.address)
                     clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     val rawLen = packet.length
@@ -230,12 +268,13 @@ class PointerService : Service() {
     // struct vmouse_t { int32_t x; int32_t y; uint8_t state; } // 9 bytes
     // state: bit0=show, bit1=down
     private fun startBinaryUdpReceiver() {
+        val sock = socket6534 ?: return
         GlobalScope.launch {
             val buffer = ByteArray(9)
             while (true) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
-                    socket6534.receive(packet)
+                    sock.receive(packet)
                     val localAddr = findLocalAddressFor(packet.address)
                     clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     val rawLen = packet.length
@@ -268,11 +307,12 @@ class PointerService : Service() {
     // header 内容忽略，vmouse_t 与 6534 端口格式一致（小端序）
     // 连接建立后也会上报屏幕方向
     private fun startTcpServer() {
+        val srv = serverSocket ?: return
         GlobalScope.launch {
             android.util.Log.d("PointerService", "TCP:6535 server started, waiting for connections")
             while (true) {
                 try {
-                    val clientSocket = serverSocket.accept()
+                    val clientSocket = srv.accept()
                     val remoteAddr = clientSocket.remoteSocketAddress
                     tcpClients.add(clientSocket.getOutputStream())
                     android.util.Log.d("PointerService", "TCP:6535 client connected from $remoteAddr, total=${tcpClients.size}")
@@ -450,7 +490,7 @@ class PointerService : Service() {
                             android.util.Log.d("PointerService", "UDP sendSocket created for localAddr=${localAddr.hostAddress}")
                             DatagramSocket(0, localAddr)
                         }
-                    } ?: socket  // 找不到本地地址时 fallback 到默认 socket
+                    } ?: socket ?: return@forEach  // 找不到本地地址时 fallback 到默认 socket
                     sendSocket.send(packet)
                     android.util.Log.d("PointerService", "UDP sent orientation=0x%02X to ${client.remoteAddr.hostAddress}:${client.remotePort} via ${client.localAddr?.hostAddress ?: "default"}".format(orientationByte.toInt() and 0xFF))
                 } catch (e: Exception) {
@@ -479,11 +519,11 @@ class PointerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         removeExistingPointer()
-        socket.close()
-        socket6534.close()
+        socket?.close(); socket = null
+        socket6534?.close(); socket6534 = null
         sendSockets.values.forEach { try { it.close() } catch (_: Exception) {} }
         sendSockets.clear()
-        serverSocket.close()
+        serverSocket?.close(); serverSocket = null
         tcpClients.forEach { try { it.close() } catch (_: Exception) {} }
         tcpClients.clear()
         if (::orientationEventListener.isInitialized) {
@@ -493,6 +533,7 @@ class PointerService : Service() {
             val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             displayManager.unregisterDisplayListener(it)
         }
+        sendStatusBroadcast(STATUS_STOPPED, "服务已停止")
     }
 
     override fun onBind(intent: Intent?): IBinder? {
