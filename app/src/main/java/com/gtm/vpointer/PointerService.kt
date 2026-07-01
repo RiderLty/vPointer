@@ -258,7 +258,7 @@ class PointerService : Service() {
                         android.util.Log.w("PointerService", "UDP:6533 bad format: expected 5 fields, got ${values.size}")
                     }
                 } catch (e: Exception) {
-                    android.util.Log.e("PointerService", "UDP:6533 error", e)
+                    if (!sock.isClosed) android.util.Log.e("PointerService", "UDP:6533 error", e)
                 }
             }
         }
@@ -296,7 +296,7 @@ class PointerService : Service() {
                         android.util.Log.w("PointerService", "UDP:6534 bad length: expected 9, got $rawLen")
                     }
                 } catch (e: Exception) {
-                    android.util.Log.e("PointerService", "UDP:6534 error", e)
+                    if (!sock.isClosed) android.util.Log.e("PointerService", "UDP:6534 error", e)
                 }
             }
         }
@@ -322,7 +322,7 @@ class PointerService : Service() {
                     sendTcpOrientation(clientSocket.getOutputStream())
                     launch { handleTcpClient(clientSocket) }
                 } catch (e: Exception) {
-                    android.util.Log.e("PointerService", "TCP:6535 accept error", e)
+                    if (!srv.isClosed) android.util.Log.e("PointerService", "TCP:6535 accept error", e)
                 }
             }
         }
