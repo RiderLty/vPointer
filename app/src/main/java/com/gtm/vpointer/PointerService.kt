@@ -117,6 +117,21 @@ class PointerService : Service() {
         super.onCreate()
         displayManagerHelper = DisplayManagerHelper(this)
 
+        // 前台服务通知，防止系统杀掉
+        val channel = android.app.NotificationChannel(
+            "vpointer_service", "vPointer 服务",
+            android.app.NotificationManager.IMPORTANCE_LOW
+        ).apply { description = "虚拟光标后台服务" }
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(channel)
+        val notification = android.app.Notification.Builder(this, "vpointer_service")
+            .setContentTitle("vPointer")
+            .setContentText("虚拟光标运行中")
+            .setSmallIcon(R.drawable.pointer_arrow)
+            .setOngoing(true)
+            .build()
+        startForeground(1, notification)
+
         // 尝试绑定三个端口，任意一个失败则全部回滚
         try {
             socket = DatagramSocket(6533)
@@ -328,52 +343,71 @@ class PointerService : Service() {
         }
     }
 
+    // TCP header 同步状态机：逐字节扫描，单字节错误不会破坏后续同步
+    private companion object {
+        const val TCP_STATE_SYNC = 0      // 等待 0x55
+        const val TCP_STATE_HEADER = 1    // 已收到 0x55，等待 0xAA
+        const val TCP_STATE_BODY = 2      // header 完成，读取 9 字节 body
+    }
+
     private suspend fun handleTcpClient(clientSocket: Socket) {
         val remote = clientSocket.remoteSocketAddress
         try {
             val input = clientSocket.getInputStream()
-            val header = ByteArray(2)
             val body = ByteArray(9)
             var packetCount = 0
-            var syncCount = 0
+            var syncMissCount = 0
+            var state = TCP_STATE_SYNC
+            var bodyOffset = 0
+
             while (true) {
-                // 读取 2 字节 header，必须为 0x55 0xAA，否则丢弃直到同步
-                if (!readFully(input, header)) {
-                    android.util.Log.d("PointerService", "TCP:6535 $remote read header EOF")
+                val b = input.read()
+                if (b == -1) {
+                    android.util.Log.d("PointerService", "TCP:6535 $remote EOF")
                     break
                 }
-                if (header[0] != 0x55.toByte() || header[1] != 0xAA.toByte()) {
-                    syncCount++
-                    android.util.Log.d("PointerService", "TCP:6535 $remote sync miss #$syncCount, got [%02X %02X]".format(header[0].toInt() and 0xFF, header[1].toInt() and 0xFF))
-                    // header 不匹配，逐字节滑动窗口重新同步
-                    header[0] = header[1]
-                    val b = input.read()
-                    if (b == -1) break
-                    header[1] = b.toByte()
-                    if (header[1] == (-1).toByte()) break
-                    continue
-                }
-                // 读取 9 字节 vmouse_t
-                if (!readFully(input, body)) {
-                    android.util.Log.d("PointerService", "TCP:6535 $remote read body EOF")
-                    break
-                }
-                packetCount++
 
-                val bb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
-                val x = bb.getInt()
-                val y = bb.getInt()
-                val state = bb.get().toInt() and 0xFF
-                val show = state and 0x01
-                val down = (state shr 1) and 0x01
-                val hexDump = body.joinToString(" ") { "%02X".format(it) }
-                android.util.Log.d("PointerService", "TCP:6535 $remote #$packetCount hex=[$hexDump] x=$x y=$y state=0x%02X show=$show down=$down".format(state))
+                when (state) {
+                    TCP_STATE_SYNC -> {
+                        if (b == 0x55) state = TCP_STATE_HEADER
+                        // 不是 0x55 就继续等，不做任何操作
+                    }
+                    TCP_STATE_HEADER -> {
+                        if (b == 0xAA) {
+                            state = TCP_STATE_BODY
+                            bodyOffset = 0
+                        } else if (b == 0x55) {
+                            // 0x55 可能是下一个包的开头，保持 HEADER 状态
+                        } else {
+                            syncMissCount++
+                            android.util.Log.d("PointerService", "TCP:6535 $remote sync miss #$syncMissCount, got 0x%02X after 0x55".format(b))
+                            state = TCP_STATE_SYNC
+                        }
+                    }
+                    TCP_STATE_BODY -> {
+                        body[bodyOffset++] = b.toByte()
+                        if (bodyOffset >= 9) {
+                            // 完整包收到
+                            state = TCP_STATE_SYNC
+                            packetCount++
 
-                Handler(Looper.getMainLooper()).post {
-                    handlePointer(x, y, show, down)
+                            val bb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
+                            val x = bb.getInt()
+                            val y = bb.getInt()
+                            val st = bb.get().toInt() and 0xFF
+                            val show = st and 0x01
+                            val down = (st shr 1) and 0x01
+                            val hexDump = body.joinToString(" ") { "%02X".format(it) }
+                            android.util.Log.d("PointerService", "TCP:6535 $remote #$packetCount hex=[$hexDump] x=$x y=$y state=0x%02X show=$show down=$down".format(st))
+
+                            Handler(Looper.getMainLooper()).post {
+                                handlePointer(x, y, show, down)
+                            }
+                        }
+                    }
                 }
             }
-            android.util.Log.d("PointerService", "TCP:6535 $remote stream ended, packets=$packetCount syncMisses=$syncCount")
+            android.util.Log.d("PointerService", "TCP:6535 $remote stream ended, packets=$packetCount syncMisses=$syncMissCount")
         } catch (e: Exception) {
             android.util.Log.d("PointerService", "TCP:6535 $remote disconnected: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
@@ -381,16 +415,6 @@ class PointerService : Service() {
             android.util.Log.d("PointerService", "TCP:6535 $remote cleaned up, remaining=${tcpClients.size}")
             try { clientSocket.close() } catch (_: Exception) {}
         }
-    }
-
-    private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
-        var offset = 0
-        while (offset < buf.size) {
-            val read = input.read(buf, offset, buf.size - offset)
-            if (read == -1) return false
-            offset += read
-        }
-        return true
     }
 
     private fun sendTcpOrientation(output: OutputStream) {
@@ -518,6 +542,7 @@ class PointerService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         removeExistingPointer()
         socket?.close(); socket = null
         socket6534?.close(); socket6534 = null
