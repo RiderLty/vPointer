@@ -63,11 +63,16 @@ fun DisplaySelectScreen(
         }
 
         // 状态信息
-        if (serviceState == ServiceState.ERROR && serviceMessage.isNotEmpty()) {
+        if (serviceMessage.isNotEmpty()) {
+            val statusColor = when (serviceState) {
+                ServiceState.RUNNING -> Color(0xFF4CAF50)
+                ServiceState.ERROR -> MaterialTheme.colorScheme.error
+                ServiceState.IDLE -> Color.Gray
+            }
             Text(
                 text = serviceMessage,
                 fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.error,
+                color = statusColor,
                 modifier = Modifier.padding(top = 12.dp)
             )
         }

@@ -41,6 +41,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 恢复旋转前的状态
+        if (savedInstanceState != null) {
+            val savedState = savedInstanceState.getString("serviceState")
+            if (savedState != null) {
+                serviceState = ServiceState.valueOf(savedState)
+                serviceMessage = savedInstanceState.getString("serviceMessage", "")
+            }
+        }
+
         displayManagerHelper = DisplayManagerHelper(this)
         displays = displayManagerHelper.getAllDisplays()
 
@@ -116,6 +125,12 @@ class MainActivity : ComponentActivity() {
             putExtra(EXTRA_DISPLAY_ID, displayId)
         }
         startService(serviceIntent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("serviceState", serviceState.name)
+        outState.putString("serviceMessage", serviceMessage)
     }
 
     override fun onDestroy() {
