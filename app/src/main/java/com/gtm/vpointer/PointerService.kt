@@ -29,6 +29,7 @@ import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
@@ -153,9 +154,20 @@ class PointerService : Service() {
 
         // 尝试绑定三个端口，任意一个失败则全部回滚
         try {
-            socket = DatagramSocket(6533)
-            socket6534 = DatagramSocket(6534)
-            serverSocket = ServerSocket(6535)
+            // reuseAddress 必须在 bind 前设置。TCP 6535 关闭后若存在 TIME_WAIT
+            // 连接，快速重启会报 "Address already in use"，设置后允许立即复用端口。
+            socket = DatagramSocket(null).apply {
+                reuseAddress = true
+                bind(InetSocketAddress(6533))
+            }
+            socket6534 = DatagramSocket(null).apply {
+                reuseAddress = true
+                bind(InetSocketAddress(6534))
+            }
+            serverSocket = ServerSocket().apply {
+                reuseAddress = true
+                bind(InetSocketAddress(6535))
+            }
         } catch (e: Exception) {
             android.util.Log.e("PointerService", "Port binding failed, rolling back", e)
             socket?.close(); socket = null
