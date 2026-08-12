@@ -35,6 +35,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ConcurrentHashMap
 
 class PointerService : Service() {
 
@@ -70,10 +71,12 @@ class PointerService : Service() {
 
     // 记录 UDP 客户端及其所在的本地网卡 IP，发包时绑定到该网卡
     private data class ClientInfo(val remoteAddr: InetAddress, val remotePort: Int, val localAddr: InetAddress?)
-    private val clients = mutableSetOf<ClientInfo>()
+    // 这些集合在多个接收/发送协程之间共享（add 与 forEach/remove 并发），
+    // 使用线程安全的并发集合，避免 ConcurrentModificationException 与数据竞争。
+    private val clients = ConcurrentHashMap.newKeySet<ClientInfo>()
     // 按本地 IP 缓存的发送 socket，避免每次创建
-    private val sendSockets = mutableMapOf<InetAddress, DatagramSocket>()
-    private val tcpClients = mutableSetOf<OutputStream>()
+    private val sendSockets = ConcurrentHashMap<InetAddress, DatagramSocket>()
+    private val tcpClients = ConcurrentHashMap.newKeySet<OutputStream>()
     private var lastRotation = -1
     // 按下状态方向上报节流：每个指针事件最高 250Hz，限制为 1Hz 避免冗余回发
     private var lastDownOrientationSendMs = 0L
@@ -565,7 +568,8 @@ class PointerService : Service() {
                     val packet = DatagramPacket(data, data.size, client.remoteAddr, client.remotePort)
                     // 绑定到接收该客户端数据的本地网卡发包，解决多网卡路由问题
                     val sendSocket = client.localAddr?.let { localAddr ->
-                        sendSockets.getOrPut(localAddr) {
+                        // computeIfAbsent 原子地创建并缓存，避免并发重复建 socket
+                        sendSockets.computeIfAbsent(localAddr) {
                             android.util.Log.d("PointerService", "UDP sendSocket created for localAddr=${localAddr.hostAddress}")
                             DatagramSocket(0, localAddr)
                         }
