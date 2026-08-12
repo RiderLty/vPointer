@@ -60,6 +60,9 @@ class PointerService : Service() {
     private var socket: DatagramSocket? = null
     private var socket6534: DatagramSocket? = null
     private var serverSocket: ServerSocket? = null
+    // 三个端口是否全部绑定成功。绑定失败时 onCreate 已广播 ERROR 并 stopSelf，
+    // 但系统仍会回调 onStartCommand/onDestroy，据此避免覆盖错误状态。
+    private var portsBound = false
 
     // 记录 UDP 客户端及其所在的本地网卡 IP，发包时绑定到该网卡
     private data class ClientInfo(val remoteAddr: InetAddress, val remotePort: Int, val localAddr: InetAddress?)
@@ -160,6 +163,7 @@ class PointerService : Service() {
             return
         }
         android.util.Log.d("PointerService", "All ports bound: 6533/6534/6535")
+        portsBound = true
     }
 
     private fun sendStatusBroadcast(status: String, message: String) {
@@ -173,6 +177,12 @@ class PointerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // onCreate 端口绑定失败时已广播 ERROR 并 stopSelf，但系统仍会回调本方法；
+        // 此时直接返回，避免启动半初始化状态的接收器并广播 RUNNING 覆盖错误状态。
+        if (!portsBound) {
+            android.util.Log.e("PointerService", "onStartCommand: ports not bound, aborting")
+            return START_NOT_STICKY
+        }
         val displayId = intent?.getIntExtra(MainActivity.EXTRA_DISPLAY_ID, Display.DEFAULT_DISPLAY)
             ?: Display.DEFAULT_DISPLAY
         android.util.Log.d("PointerService", "onStartCommand called with displayId: $displayId")
@@ -575,7 +585,10 @@ class PointerService : Service() {
             val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             displayManager.unregisterDisplayListener(it)
         }
-        sendStatusBroadcast(STATUS_STOPPED, "服务已停止")
+        // 端口绑定失败时已在 onCreate 广播 ERROR，不应再覆盖为 STOPPED
+        if (portsBound) {
+            sendStatusBroadcast(STATUS_STOPPED, "服务已停止")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
