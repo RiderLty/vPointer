@@ -18,7 +18,6 @@ import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Display
 import android.view.Gravity
-import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
@@ -68,10 +67,16 @@ class PointerService : Service() {
     // 按本地 IP 缓存的发送 socket，避免每次创建
     private val sendSockets = mutableMapOf<InetAddress, DatagramSocket>()
     private val tcpClients = mutableSetOf<OutputStream>()
-    private lateinit var orientationEventListener: OrientationEventListener
     private var lastRotation = -1
     // 按下状态方向上报节流：每个指针事件最高 250Hz，限制为 1Hz 避免冗余回发
     private var lastDownOrientationSendMs = 0L
+
+    // handlePointer 去重：坐标/按下状态未变化时跳过窗口更新（binder IPC），
+    // 控制端重复发包（可达 250Hz）时避免每包都调用 updateViewLayout。
+    // 渲染器重建时需在 removeExistingPointer() 中重置，否则会跳过首次 setPosition。
+    private var lastX = Int.MIN_VALUE
+    private var lastY = Int.MIN_VALUE
+    private var lastDown = -1
 
     private var targetDisplayId = Display.DEFAULT_DISPLAY
     private lateinit var displayManagerHelper: DisplayManagerHelper
@@ -186,7 +191,6 @@ class PointerService : Service() {
         startUdpReceiver()
         startBinaryUdpReceiver()
         startTcpServer()
-        startOrientationListener()
         startDisplayListener()
 
         sendStatusBroadcast(STATUS_RUNNING, "服务运行中 (6533/6534/6535)")
@@ -225,10 +229,16 @@ class PointerService : Service() {
         renderer?.destroy()
         renderer = null
         isShow = false
+        // 重置去重状态，避免重建后的渲染器沿用旧坐标而跳过首次 setPosition
+        lastX = Int.MIN_VALUE
+        lastY = Int.MIN_VALUE
+        lastDown = -1
     }
 
     private fun startDisplayListener() {
         if (displayListener != null) return
+        // 记录当前屏幕方向，仅真实变化时上报，避免注册后首次属性变化误发
+        lastRotation = getDeviceRotation()
         displayListener = object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) {
                 // 新显示器插入，不需要处理
@@ -246,7 +256,17 @@ class PointerService : Service() {
             }
 
             override fun onDisplayChanged(displayId: Int) {
-                // 显示器属性变化，不需要处理
+                // 旋转会改变 default display 的 rotation 属性并触发本回调。
+                // 原先用 OrientationEventListener（加速度计）检测旋转，服务常驻期间
+                // 持续占用加速计并以 5Hz 唤醒 CPU，即使设备静止、无客户端；
+                // DisplayManager 只在属性真正变化时回调，零传感器耗电。
+                if (displayId == Display.DEFAULT_DISPLAY) {
+                    val rotation = getDeviceRotation()
+                    if (rotation != lastRotation) {
+                        lastRotation = rotation
+                        sendDeviceOrientation(rotation)
+                    }
+                }
             }
         }
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -436,41 +456,33 @@ class PointerService : Service() {
         }
     }
 
-    private fun startOrientationListener() {
-        if (::orientationEventListener.isInitialized) return
-        orientationEventListener = object : OrientationEventListener(this) {
-            override fun onOrientationChanged(orientation: Int) {
-                val rotation = getDeviceRotation()
-                if (rotation != lastRotation) {
-                    lastRotation = rotation
-                    sendDeviceOrientation(rotation)
-                }
-            }
-        }
-        if (orientationEventListener.canDetectOrientation()) {
-            orientationEventListener.enable()
-        }
-    }
-
     private fun handlePointer(abs_x: Int, abs_y: Int, show_int: Int, downing_int: Int) {
         android.util.Log.d("PointerService", "handlePointer x=$abs_x y=$abs_y show=$show_int down=$downing_int renderer=${renderer?.javaClass?.simpleName}")
         if (show_int == 1) {
             if (!isShow) {
                 showPointer()
             }
-            renderer?.setPosition(abs_x, abs_y)
+            // 去重：坐标/按下状态未变化时跳过窗口更新。setPosition 每次都是
+            // updateViewLayout / window.attributes 的 binder IPC，控制端重复发包
+            // （可达 250Hz）时能显著降低系统调用与主线程负载。
+            if (abs_x != lastX || abs_y != lastY) {
+                lastX = abs_x
+                lastY = abs_y
+                renderer?.setPosition(abs_x, abs_y)
+            }
+            if (downing_int != lastDown) {
+                lastDown = downing_int
+                renderer?.setScale(if (downing_int == 1) 0.95f else 1.0f)
+            }
             if (downing_int == 1) {
-                renderer?.setScale(0.95f)
                 // 按下时持续上报屏幕方向，但节流到 1Hz：指针事件最高 250Hz，
                 // 否则每秒会新建数百个 GlobalScope 协程向 Pico 回发冗余字节。
-                // 方向真正变化时还有 OrientationEventListener 兜底，不会漏发。
+                // 方向真正变化时还有 DisplayListener 兜底，不会漏发。
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastDownOrientationSendMs >= 1000) {
                     lastDownOrientationSendMs = now
                     sendDeviceOrientation(getDeviceRotation())
                 }
-            } else {
-                renderer?.setScale(1.0f)
             }
         } else {
             if (isShow) {
@@ -559,9 +571,6 @@ class PointerService : Service() {
         serverSocket?.close(); serverSocket = null
         tcpClients.forEach { try { it.close() } catch (_: Exception) {} }
         tcpClients.clear()
-        if (::orientationEventListener.isInitialized) {
-            orientationEventListener.disable()
-        }
         displayListener?.let {
             val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             displayManager.unregisterDisplayListener(it)
