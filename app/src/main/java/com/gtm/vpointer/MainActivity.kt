@@ -220,7 +220,10 @@ class MainActivity : ComponentActivity() {
         val serviceIntent = Intent(this, PointerService::class.java).apply {
             putExtra(EXTRA_DISPLAY_ID, displayId)
         }
-        startService(serviceIntent)
+        // PointerService 在 onCreate 即调用 startForeground，需用 startForegroundService
+        // 启动（与 PortForwardService 一致），否则应用退到后台时 startService 会抛
+        // IllegalStateException。
+        ContextCompat.startForegroundService(this, serviceIntent)
     }
 
     private fun startForward() {
