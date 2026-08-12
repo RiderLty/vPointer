@@ -63,6 +63,9 @@ class PointerService : Service() {
     // 三个端口是否全部绑定成功。绑定失败时 onCreate 已广播 ERROR 并 stopSelf，
     // 但系统仍会回调 onStartCommand/onDestroy，据此避免覆盖错误状态。
     private var portsBound = false
+    // 接收协程是否已启动。onStartCommand 可被多次调用（重复 startService 或
+    // 快速双击），不加保护会为同一组 socket 反复启动多个接收循环，导致重复处理。
+    private var receiversStarted = false
 
     // 记录 UDP 客户端及其所在的本地网卡 IP，发包时绑定到该网卡
     private data class ClientInfo(val remoteAddr: InetAddress, val remotePort: Int, val localAddr: InetAddress?)
@@ -198,10 +201,15 @@ class PointerService : Service() {
             createFloatingPointer()
         }
 
-        startUdpReceiver()
-        startBinaryUdpReceiver()
-        startTcpServer()
-        startDisplayListener()
+        // 只启动一次：onStartCommand 可能被重复调用，重复启动会在同一 socket 上
+        // 挂多个 receive 循环，导致每个数据包被处理多次。
+        if (!receiversStarted) {
+            receiversStarted = true
+            startUdpReceiver()
+            startBinaryUdpReceiver()
+            startTcpServer()
+            startDisplayListener()
+        }
 
         sendStatusBroadcast(STATUS_RUNNING, "服务运行中 (6533/6534/6535)")
         android.util.Log.d("PointerService", "onStartCommand completed, returning START_STICKY")
