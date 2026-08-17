@@ -25,26 +25,29 @@ import java.util.Collections
 /**
  * 纯应用层 TCP 端口转发，用于替代：
  *   socat TCP4-LISTEN:8000,bind=0.0.0.0,reuseaddr,fork \
- *         TCP4:192.168.73.1:80,so-bindtodevice=usb0
+ *         TCP4:192.168.73.1:80,so-bindtodevice=eth0
  *
  * SO_BINDTODEVICE 本身需要 root，非系统 App 不可用，因此改用等价的 Android 方式：
- *  - 通过 [ConnectivityManager] 找到 usb* 网卡对应的 [Network]，对上游 Socket 调用
- *    [Network.bindSocket]，强制其流量走该网络（等价于 so-bindtodevice）。
- *  - 若 usb 仅作为裸网卡存在、未被系统登记为 Network，则回退到把 Socket 的源地址
+ *  - 目标网卡按 MAC 地址 [TARGET_MAC] 识别（网卡名称可能为 eth0/eth1/eth2 等，随设备不同），
+ *    通过 [ConnectivityManager] 找到同名 [Network]，对上游 Socket 调用 [Network.bindSocket]，
+ *    强制其流量走该网络（等价于 so-bindtodevice）。
+ *  - 若该网卡仅作为裸网卡存在、未被系统登记为 Network，则回退到把 Socket 的源地址
  *    绑定到该网卡的 IPv4 地址，Linux 依据源地址选择出口网卡。
  *
- * usb0 热插拔由 NetworkCallback + 2 秒轮询兜底感知：网卡在则转发，拔出则暂停上游
+ * 目标网卡热插拔由 NetworkCallback + 2 秒轮询兜底感知：网卡在则转发，拔出则暂停上游
  * 连接（监听 socket 一直保留），重新插入自动恢复。
  */
 class PortForwarder(
     private val context: Context,
     private val onStatus: (Status, String) -> Unit
 ) {
-    enum class Status { STARTED, USB_UP, USB_DOWN, ERROR }
+    enum class Status { STARTED, IFACE_UP, IFACE_DOWN, ERROR }
 
     companion object {
         const val TARGET_HOST = "192.168.73.1"
         const val TARGET_PORT = 80
+        // 目标网卡硬件地址（小写、冒号分隔），用于识别出口网卡，与网卡名称无关
+        const val TARGET_MAC = "00:02:73:6a:96:01"
         private const val TAG = "PortForwarder"
         private const val BUFFER = 8192
         private const val CONNECT_TIMEOUT_MS = 5000
@@ -55,10 +58,10 @@ class PortForwarder(
     @Volatile private var running = false
     @Volatile private var listenPort = 0
 
-    // usb 网卡检测结果
-    @Volatile private var usbNetwork: Network? = null
-    @Volatile private var usbInterfaceName: String? = null
-    @Volatile private var usbLocalIp: InetAddress? = null
+    // 目标网卡检测结果（按 MAC 识别）
+    @Volatile private var targetNetwork: Network? = null
+    @Volatile private var targetInterfaceName: String? = null
+    @Volatile private var targetLocalIp: InetAddress? = null
 
     private val connections = Collections.synchronizedSet(HashSet<Socket>())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -89,10 +92,10 @@ class PortForwarder(
         running = true
 
         connMgr = context.getSystemService(ConnectivityManager::class.java)
-        registerUsbMonitor()
+        registerInterfaceMonitor()
 
         onStatus(Status.STARTED, "转发已启动，监听 0.0.0.0:$port → $TARGET_HOST:$TARGET_PORT")
-        rescanUsb(forceNotify = true) // 立即上报一次当前 usb 状态
+        rescanTarget(forceNotify = true) // 立即上报一次当前网卡状态
         acceptLoop()
     }
 
@@ -101,7 +104,7 @@ class PortForwarder(
     fun stop() {
         if (!running) return
         running = false
-        unregisterUsbMonitor()
+        unregisterInterfaceMonitor()
         server?.let { runCatching { it.close() } }
         server = null
         synchronized(connections) {
@@ -110,9 +113,9 @@ class PortForwarder(
         }
         scope.cancel()
         listenPort = 0
-        usbNetwork = null
-        usbInterfaceName = null
-        usbLocalIp = null
+        targetNetwork = null
+        targetInterfaceName = null
+        targetLocalIp = null
     }
 
     private fun acceptLoop() {
@@ -133,7 +136,7 @@ class PortForwarder(
     private suspend fun handle(client: Socket) {
         connections += client
         try {
-            val upstream = connectUpstream() ?: return // usb 缺失或上游不可达：直接关闭本连接
+            val upstream = connectUpstream() ?: return // 目标网卡缺失或上游不可达：直接关闭本连接
             try {
                 val cIn = client.getInputStream()
                 val cOut = client.getOutputStream()
@@ -157,10 +160,10 @@ class PortForwarder(
     }
 
     private fun connectUpstream(): Socket? {
-        val net = usbNetwork
-        val localIp = usbLocalIp
+        val net = targetNetwork
+        val localIp = targetLocalIp
         if (net == null && localIp == null) {
-            Log.w(TAG, "upstream rejected: usb network not present")
+            Log.w(TAG, "upstream rejected: target network not present")
             return null
         }
         val s = Socket()
@@ -199,9 +202,9 @@ class PortForwarder(
         }
     }
 
-    // ---------------- usb 网卡检测 / 热插拔 ----------------
+    // ---------------- 目标网卡检测 / 热插拔 ----------------
 
-    private fun registerUsbMonitor() {
+    private fun registerInterfaceMonitor() {
         val cm = connMgr ?: return
         val request = try {
             NetworkRequest.Builder().clearCapabilities().build() // 匹配所有网络
@@ -210,8 +213,8 @@ class PortForwarder(
             return
         }
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { rescanUsb() }
-            override fun onLost(network: Network) { rescanUsb() }
+            override fun onAvailable(network: Network) { rescanTarget() }
+            override fun onLost(network: Network) { rescanTarget() }
         }
         networkCallback = cb
         try {
@@ -223,12 +226,12 @@ class PortForwarder(
         scope.launch {
             while (running) {
                 delay(RESCAN_INTERVAL_MS)
-                rescanUsb()
+                rescanTarget()
             }
         }
     }
 
-    private fun unregisterUsbMonitor() {
+    private fun unregisterInterfaceMonitor() {
         val cm = connMgr
         val cb = networkCallback
         if (cm != null && cb != null) {
@@ -238,76 +241,74 @@ class PortForwarder(
     }
 
     /**
-     * 重新探测 usb 网卡。优先级：
-     *  1) ConnectivityManager 中 interfaceName 以 "usb" 开头的 Network
-     *  2) NetworkInterface 枚举中名称以 "usb" 开头且已 up 的接口
-     * 本地源地址取该接口的首个 IPv4。仅在状态变化（或 forceNotify）时回调，避免刷屏。
+     * 重新探测目标网卡：按 MAC 地址 [TARGET_MAC] 识别（名称可能为 eth0/eth1/eth2 等，随设备不同）。
+     * 找到后：
+     *  1) 用 ConnectivityManager 找到同 interfaceName 的 [Network]（用于 Network.bindSocket 强制走该网卡）
+     *  2) 取该接口的首个 IPv4 作为本地源地址回退
+     * 仅在状态变化（或 forceNotify）时回调，避免刷屏。
      */
     @Synchronized
-    fun rescanUsb(forceNotify: Boolean = false) {
+    fun rescanTarget(forceNotify: Boolean = false) {
         val cm = connMgr
-        var foundNet: Network? = null
-        var name: String? = null
 
-        if (cm != null) {
+        // 1) 在 NetworkInterface 枚举里按 MAC 找到目标网卡，拿到名称与本地 IPv4
+        var name: String? = null
+        var localIp: InetAddress? = null
+        try {
+            val ifaces = NetworkInterface.getNetworkInterfaces()
+            if (ifaces != null) {
+                for (ni in ifaces) {
+                    if (!ni.isUp || ni.isLoopback) continue
+                    val hw = ni.hardwareAddress
+                    if (hw != null && formatMac(hw).equals(TARGET_MAC, ignoreCase = true)) {
+                        name = ni.name
+                        val addrs = ni.inetAddresses
+                        while (addrs.hasMoreElements()) {
+                            val a = addrs.nextElement()
+                            if (a is Inet4Address && !a.isLoopbackAddress) {
+                                localIp = a; break
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "NetworkInterface 枚举失败: ${e.message}")
+        }
+
+        // 2) 用名称在 ConnectivityManager 里找对应的 Network（用于 bindSocket）
+        var foundNet: Network? = null
+        if (name != null && cm != null) {
             try {
                 for (n in cm.allNetworks) {
                     val iface = runCatching { cm.getLinkProperties(n)?.interfaceName }.getOrNull()
-                    if (iface != null && iface.startsWith("usb", ignoreCase = true)) {
-                        foundNet = n; name = iface; break
+                    if (iface != null && iface == name) {
+                        foundNet = n; break
                     }
                 }
             } catch (e: SecurityException) {
-                // 缺 ACCESS_NETWORK_STATE 时跳过 ConnectivityManager，回退到 NetworkInterface 枚举
+                // 缺 ACCESS_NETWORK_STATE 时跳过 ConnectivityManager，回退到源地址绑定
                 Log.w(TAG, "ConnectivityManager access denied (ACCESS_NETWORK_STATE?): ${e.message}")
             }
         }
-        if (name == null) {
-            try {
-                val ifaces = NetworkInterface.getNetworkInterfaces()
-                if (ifaces != null) {
-                    for (ni in ifaces) {
-                        if (ni.isUp && !ni.isLoopback &&
-                            ni.name.startsWith("usb", ignoreCase = true)
-                        ) {
-                            name = ni.name; break
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-            }
-        }
 
-        var localIp: InetAddress? = null
-        if (name != null) {
-            try {
-                val ni = NetworkInterface.getByName(name)
-                if (ni != null) {
-                    val addrs = ni.inetAddresses
-                    while (addrs.hasMoreElements()) {
-                        val a = addrs.nextElement()
-                        if (a is Inet4Address && !a.isLoopbackAddress) {
-                            localIp = a; break
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-            }
-        }
-
-        val wasUp = usbNetwork != null || usbLocalIp != null
-        usbNetwork = foundNet
-        usbInterfaceName = name
-        usbLocalIp = localIp
+        val wasUp = targetNetwork != null || targetLocalIp != null
+        targetNetwork = foundNet
+        targetInterfaceName = name
+        targetLocalIp = localIp
         val nowUp = foundNet != null || localIp != null
 
         if (forceNotify || nowUp != wasUp) {
             val (status, msg) = if (nowUp) {
-                Status.USB_UP to "USB 已连接 (${name ?: "usb"})，正在转发 0.0.0.0:$listenPort → $TARGET_HOST:$TARGET_PORT"
+                Status.IFACE_UP to "网卡已连接 (${name ?: TARGET_MAC})，正在转发 0.0.0.0:$listenPort → $TARGET_HOST:$TARGET_PORT"
             } else {
-                Status.USB_DOWN to "USB 已断开，转发暂停（保持监听 0.0.0.0:$listenPort，等待 USB 插入）"
+                Status.IFACE_DOWN to "未找到目标网卡 (MAC $TARGET_MAC)，转发暂停（保持监听 0.0.0.0:$listenPort）"
             }
             onStatus(status, msg)
         }
     }
+
+    private fun formatMac(bytes: ByteArray): String =
+        bytes.joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Android 应用（Kotlin + Jetpack Compose，单模块 `:app`），在安卓设备上显示虚拟光标，通过 UDP/TCP 接收坐标信号控制，支持内置显示器（WindowManager 覆盖层）和外接显示器（Presentation）。附带 USB 网卡 TCP 端口转发功能。完整协议文档见 `README.md`（端口 6533/6534/6535 与端口转发）。
+Android 应用（Kotlin + Jetpack Compose，单模块 `:app`），在安卓设备上显示虚拟光标，通过 UDP/TCP 接收坐标信号控制，支持内置显示器（WindowManager 覆盖层）和外接显示器（Presentation）。附带网卡 TCP 端口转发功能（按 MAC 识别目标网卡）。完整协议文档见 `README.md`（端口 6533/6534/6535 与端口转发）。
 
 ## 构建与调试命令
 
@@ -51,7 +51,7 @@ onCreate 时一次性绑定 UDP 6533、UDP 6534、TCP 6535 三个端口，任一
 
 ### 端口转发（`PortForwardService.kt` + `PortForwarder.kt`）
 
-非 root 实现 socat `so-bindtodevice=usb0` 的等价方案：监听端口 `8000`（UI 可改，范围 1024~65535）→ 转发到 `192.168.73.1:80`。上游 socket 优先用 `Network.bindSocket()`（从 ConnectivityManager 找 interfaceName 以 `usb` 开头的 Network）强制走 usb0；无 Network 时回退绑定 usb 网卡的 IPv4 源地址。usb0 热插拔由 `NetworkCallback` + 2 秒轮询兜底感知：拔出只暂停上游（监听端口保留），重插自动恢复。需要 `ACCESS_NETWORK_STATE`，缺失时回退到 NetworkInterface 枚举（有降级逻辑，勿破坏）。
+非 root 实现 socat `so-bindtodevice` 的等价方案：监听端口 `8000`（UI 可改，范围 1024~65535）→ 转发到 `192.168.73.1:80`。目标网卡按 MAC `00:02:73:6a:96:01` 在 `NetworkInterface` 枚举中识别（名称可能为 eth0/eth1/eth2 等，与名称无关）；找到后用 `ConnectivityManager` 匹配同名 `Network` 并 `Network.bindSocket()` 强制走该网卡，无 Network 时回退绑定该网卡的 IPv4 源地址。网卡热插拔由 `NetworkCallback` + 2 秒轮询兜底感知：拔出只暂停上游（监听端口保留），重插自动恢复。需要 `ACCESS_NETWORK_STATE`，缺失时回退到 NetworkInterface 枚举（有降级逻辑，勿破坏）。
 
 ### 显示器枚举（`DisplayManagerHelper.kt`）
 

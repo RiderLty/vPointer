@@ -36,7 +36,7 @@ fun PortForwardScreen(
         )
 
         Text(
-            text = "将 USB 网卡 (usb0) 上设备的 Web 配置转发到本机端口，供外部访问。上游固定转发到 192.168.73.1:80。",
+            text = "将目标网卡（按 MAC 00:02:73:6a:96:01 识别）对端设备的 Web 配置转发到本机端口，供外部访问。上游固定转发到 192.168.73.1:80。",
             fontSize = 14.sp,
             color = Color.Gray,
             modifier = Modifier.padding(bottom = 24.dp)

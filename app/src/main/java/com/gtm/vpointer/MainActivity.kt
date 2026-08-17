@@ -64,12 +64,12 @@ class MainActivity : ComponentActivity() {
             android.util.Log.d("MainActivity", "Forward status: $status - $message")
             when (status) {
                 PortForwardService.STATUS_STARTED,
-                PortForwardService.STATUS_USB_UP -> {
+                PortForwardService.STATUS_IFACE_UP -> {
                     forwardRunning = true
                     forwardStatusText = message
                     forwardStatusLevel = ForwardStatus.OK
                 }
-                PortForwardService.STATUS_USB_DOWN -> {
+                PortForwardService.STATUS_IFACE_DOWN -> {
                     forwardRunning = true
                     forwardStatusText = message
                     forwardStatusLevel = ForwardStatus.WARN

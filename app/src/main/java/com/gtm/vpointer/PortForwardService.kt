@@ -57,8 +57,8 @@ class PortForwardService : Service() {
     private fun onForwarderStatus(status: PortForwarder.Status, message: String) {
         val s = when (status) {
             PortForwarder.Status.STARTED -> STATUS_STARTED
-            PortForwarder.Status.USB_UP -> STATUS_USB_UP
-            PortForwarder.Status.USB_DOWN -> STATUS_USB_DOWN
+            PortForwarder.Status.IFACE_UP -> STATUS_IFACE_UP
+            PortForwarder.Status.IFACE_DOWN -> STATUS_IFACE_DOWN
             PortForwarder.Status.ERROR -> STATUS_ERROR
         }
         getSystemService(NotificationManager::class.java)
@@ -70,7 +70,7 @@ class PortForwardService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             NOTIF_CHANNEL, "端口转发", NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "USB 网卡端口转发后台服务" }
+        ).apply { description = "网卡端口转发后台服务" }
         nm.createNotificationChannel(channel)
         return Notification.Builder(this, NOTIF_CHANNEL)
             .setContentTitle("vPointer 端口转发")
@@ -102,8 +102,8 @@ class PortForwardService : Service() {
         const val DEFAULT_PORT = 8000
 
         const val STATUS_STARTED = "started"
-        const val STATUS_USB_UP = "usb_up"
-        const val STATUS_USB_DOWN = "usb_down"
+        const val STATUS_IFACE_UP = "iface_up"
+        const val STATUS_IFACE_DOWN = "iface_down"
         const val STATUS_ERROR = "error"
         const val STATUS_STOPPED = "stopped"
     }
