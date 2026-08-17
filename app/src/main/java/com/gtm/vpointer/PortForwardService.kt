@@ -31,7 +31,11 @@ class PortForwardService : Service() {
             Log.i(TAG, "already running, ignore restart on :$port")
             return START_REDELIVER_INTENT
         }
-        val f = PortForwarder(this) { status, msg -> onForwarderStatus(status, msg) }
+        val f = PortForwarder(
+            this,
+            onStatus = { status, msg -> onForwarderStatus(status, msg) },
+            onNics = { nics -> onNics(nics) }
+        )
         forwarder = f
         f.start(port)
         if (!f.isRunning) {
@@ -66,6 +70,14 @@ class PortForwardService : Service() {
         sendStatusBroadcast(s, message)
     }
 
+    private fun onNics(nics: List<NicInfo>) {
+        val intent = Intent(ACTION_FORWARD_NICS).apply {
+            putExtra(EXTRA_NICS, ArrayList(nics))
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
+    }
+
     private fun buildNotification(text: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
@@ -96,8 +108,10 @@ class PortForwardService : Service() {
         private const val NOTIF_CHANNEL = "vpointer_forward"
 
         const val ACTION_FORWARD_STATUS = "com.gtm.vpointer.FORWARD_STATUS"
+        const val ACTION_FORWARD_NICS = "com.gtm.vpointer.FORWARD_NICS"
         const val EXTRA_STATUS = "status"
         const val EXTRA_MESSAGE = "message"
+        const val EXTRA_NICS = "nics"
         const val EXTRA_PORT = "forward_port"
         const val DEFAULT_PORT = 8000
 

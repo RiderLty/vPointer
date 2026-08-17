@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private var forwardRunning by mutableStateOf(false)
     private var forwardStatusText by mutableStateOf("")
     private var forwardStatusLevel by mutableStateOf(ForwardStatus.INFO)
+    private var forwardNics by mutableStateOf<List<NicInfo>>(emptyList())
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -83,8 +84,18 @@ class MainActivity : ComponentActivity() {
                     forwardRunning = false
                     forwardStatusText = message
                     forwardStatusLevel = ForwardStatus.INFO
+                    forwardNics = emptyList()
                 }
             }
+        }
+    }
+
+    private val nicsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            @Suppress("DEPRECATION")
+            val nics = intent.getSerializableExtra(PortForwardService.EXTRA_NICS) as? List<NicInfo>
+                ?: emptyList()
+            forwardNics = nics
         }
     }
 
@@ -134,6 +145,14 @@ class MainActivity : ComponentActivity() {
             registerReceiver(forwardReceiver, forwardFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(forwardReceiver, forwardFilter)
+        }
+
+        // 注册网卡列表广播
+        val nicsFilter = IntentFilter(PortForwardService.ACTION_FORWARD_NICS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(nicsReceiver, nicsFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(nicsReceiver, nicsFilter)
         }
 
         setContent {
@@ -190,6 +209,7 @@ class MainActivity : ComponentActivity() {
                                 running = forwardRunning,
                                 statusText = forwardStatusText,
                                 statusLevel = forwardStatusLevel,
+                                nics = forwardNics,
                                 onStart = { startForward() },
                                 onStop = { stopForward() }
                             )
@@ -257,6 +277,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         try { unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(forwardReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(nicsReceiver) } catch (_: Exception) {}
         displayManagerHelper.unregisterDisplayListener()
     }
 

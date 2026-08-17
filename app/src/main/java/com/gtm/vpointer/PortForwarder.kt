@@ -14,6 +14,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -39,7 +40,8 @@ import java.util.Collections
  */
 class PortForwarder(
     private val context: Context,
-    private val onStatus: (Status, String) -> Unit
+    private val onStatus: (Status, String) -> Unit,
+    private val onNics: (List<NicInfo>) -> Unit
 ) {
     enum class Status { STARTED, IFACE_UP, IFACE_DOWN, ERROR }
 
@@ -241,27 +243,46 @@ class PortForwarder(
     /**
      * 重新探测目标网卡：按「子网包含 [TARGET_HOST]」识别（本机 IP 与目标同网段，如本机 192.168.73.2
      * 与目标 192.168.73.1）。Android 6+ 无法可靠读取网卡 MAC，故改用 IP 子网匹配。
-     * 找到后：
-     *  1) 用 ConnectivityManager 找到同 interfaceName 的 [Network]（用于 Network.bindSocket 强制走该网卡）
-     *  2) 取匹配到的本地 IPv4 作为源地址回退
-     * 仅在状态变化（或 forceNotify）时回调，避免刷屏。
+     * 单次枚举所有网卡，同时产出：
+     *  - 命中的 name / localIp（用于 ConnectivityManager 找 Network 与状态上报）
+     *  - 完整网卡列表（经 onNics 回传 UI 展示诊断）
+     * onStatus 仅在状态变化（或 forceNotify）时回调，避免通知/日志刷屏；onNics 每次都回调以保持列表新鲜。
      */
     @Synchronized
     fun rescanTarget(forceNotify: Boolean = false) {
         val cm = connMgr
 
-        // 1) 按子网匹配找到目标网卡，拿到名称与匹配的本地 IPv4
+        // 1) 单次枚举：收集所有网卡的 IPv4 列表，并按子网找出目标网卡
         var name: String? = null
         var localIp: InetAddress? = null
+        val nics = mutableListOf<NicInfo>()
         try {
             val remote = InetAddress.getByName(TARGET_HOST)
-            findInterfaceFor(remote)?.let { (n, ip) ->
-                name = n
-                localIp = ip
+            val ifaces = NetworkInterface.getNetworkInterfaces()
+            if (ifaces != null) {
+                for (ni in ifaces) {
+                    if (ni.isLoopback) continue
+                    val ipv4s = mutableListOf<String>()
+                    var isTarget = false
+                    if (ni.isUp) {
+                        for (ia in ni.interfaceAddresses) {
+                            val addr = ia.address ?: continue
+                            if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                                ipv4s += addr.hostAddress
+                                if (sameSubnet(addr, ia.networkPrefixLength, remote)) {
+                                    isTarget = true
+                                    if (name == null) { name = ni.name; localIp = addr }
+                                }
+                            }
+                        }
+                    }
+                    nics += NicInfo(ni.name, ipv4s, ni.isUp, isTarget)
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "NetworkInterface 枚举失败: ${e.message}")
         }
+        onNics(nics)
 
         // 2) 用名称在 ConnectivityManager 里找对应的 Network（用于 bindSocket）
         var foundNet: Network? = null
@@ -296,35 +317,22 @@ class PortForwarder(
     }
 
     /**
-     * 在 NetworkInterface 枚举里找「子网包含 remote」的网卡，返回其名称与匹配的本地 IPv4。
-     * 与 PointerService.findLocalAddressFor 使用同一套 prefix-length 子网匹配算法。
+     * 判断 local 与 remote 是否同子网（按 prefix length 计算掩码），与
+     * PointerService.findLocalAddressFor 使用同一套算法。
      */
-    private fun findInterfaceFor(remote: InetAddress): Pair<String, InetAddress>? {
-        val remoteBytes = remote.address
-        val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
-        for (ni in ifaces) {
-            if (!ni.isUp || ni.isLoopback) continue
-            for (ia in ni.interfaceAddresses) {
-                val localAddr = ia.address ?: continue
-                if (localAddr.javaClass != remote.javaClass) continue
-                val prefix = ia.networkPrefixLength
-                val localBytes = localAddr.address
-                if (localBytes.size != remoteBytes.size) continue
-                val fullBytes = prefix / 8
-                val remainBits = prefix % 8
-                var match = true
-                for (i in 0 until fullBytes) {
-                    if (localBytes[i] != remoteBytes[i]) { match = false; break }
-                }
-                if (match && remainBits > 0 && fullBytes < localBytes.size) {
-                    val mask = (0xFF shl (8 - remainBits)) and 0xFF
-                    if ((localBytes[fullBytes].toInt() and mask) != (remoteBytes[fullBytes].toInt() and mask)) {
-                        match = false
-                    }
-                }
-                if (match) return ni.name to localAddr
-            }
+    private fun sameSubnet(local: InetAddress, prefix: Short, remote: InetAddress): Boolean {
+        val lb = local.address
+        val rb = remote.address
+        if (lb.size != rb.size) return false
+        val fullBytes = prefix / 8
+        val remainBits = prefix % 8
+        for (i in 0 until fullBytes) {
+            if (lb[i] != rb[i]) return false
         }
-        return null
+        if (remainBits > 0 && fullBytes < lb.size) {
+            val mask = (0xFF shl (8 - remainBits)) and 0xFF
+            if ((lb[fullBytes].toInt() and mask) != (rb[fullBytes].toInt() and mask)) return false
+        }
+        return true
     }
 }
