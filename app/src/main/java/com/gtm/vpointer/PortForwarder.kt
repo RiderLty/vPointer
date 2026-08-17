@@ -14,7 +14,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -28,8 +27,9 @@ import java.util.Collections
  *         TCP4:192.168.73.1:80,so-bindtodevice=eth0
  *
  * SO_BINDTODEVICE 本身需要 root，非系统 App 不可用，因此改用等价的 Android 方式：
- *  - 目标网卡按 MAC 地址 [TARGET_MAC] 识别（网卡名称可能为 eth0/eth1/eth2 等，随设备不同），
- *    通过 [ConnectivityManager] 找到同名 [Network]，对上游 Socket 调用 [Network.bindSocket]，
+ *  - 目标网卡按「子网包含 [TARGET_HOST]」识别（本机 IP 与目标同网段，如本机 192.168.73.2 与
+ *    目标 192.168.73.1）。Android 6+ 无法可靠读取网卡 MAC，故改用 IP 子网匹配。
+ *    再通过 [ConnectivityManager] 找到同名 [Network]，对上游 Socket 调用 [Network.bindSocket]，
  *    强制其流量走该网络（等价于 so-bindtodevice）。
  *  - 若该网卡仅作为裸网卡存在、未被系统登记为 Network，则回退到把 Socket 的源地址
  *    绑定到该网卡的 IPv4 地址，Linux 依据源地址选择出口网卡。
@@ -46,8 +46,6 @@ class PortForwarder(
     companion object {
         const val TARGET_HOST = "192.168.73.1"
         const val TARGET_PORT = 80
-        // 目标网卡硬件地址（小写、冒号分隔），用于识别出口网卡，与网卡名称无关
-        const val TARGET_MAC = "00:02:73:6a:96:01"
         private const val TAG = "PortForwarder"
         private const val BUFFER = 8192
         private const val CONNECT_TIMEOUT_MS = 5000
@@ -58,7 +56,7 @@ class PortForwarder(
     @Volatile private var running = false
     @Volatile private var listenPort = 0
 
-    // 目标网卡检测结果（按 MAC 识别）
+    // 目标网卡检测结果（按 IP 子网识别）
     @Volatile private var targetNetwork: Network? = null
     @Volatile private var targetInterfaceName: String? = null
     @Volatile private var targetLocalIp: InetAddress? = null
@@ -241,37 +239,25 @@ class PortForwarder(
     }
 
     /**
-     * 重新探测目标网卡：按 MAC 地址 [TARGET_MAC] 识别（名称可能为 eth0/eth1/eth2 等，随设备不同）。
+     * 重新探测目标网卡：按「子网包含 [TARGET_HOST]」识别（本机 IP 与目标同网段，如本机 192.168.73.2
+     * 与目标 192.168.73.1）。Android 6+ 无法可靠读取网卡 MAC，故改用 IP 子网匹配。
      * 找到后：
      *  1) 用 ConnectivityManager 找到同 interfaceName 的 [Network]（用于 Network.bindSocket 强制走该网卡）
-     *  2) 取该接口的首个 IPv4 作为本地源地址回退
+     *  2) 取匹配到的本地 IPv4 作为源地址回退
      * 仅在状态变化（或 forceNotify）时回调，避免刷屏。
      */
     @Synchronized
     fun rescanTarget(forceNotify: Boolean = false) {
         val cm = connMgr
 
-        // 1) 在 NetworkInterface 枚举里按 MAC 找到目标网卡，拿到名称与本地 IPv4
+        // 1) 按子网匹配找到目标网卡，拿到名称与匹配的本地 IPv4
         var name: String? = null
         var localIp: InetAddress? = null
         try {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            if (ifaces != null) {
-                for (ni in ifaces) {
-                    if (!ni.isUp || ni.isLoopback) continue
-                    val hw = ni.hardwareAddress
-                    if (hw != null && formatMac(hw).equals(TARGET_MAC, ignoreCase = true)) {
-                        name = ni.name
-                        val addrs = ni.inetAddresses
-                        while (addrs.hasMoreElements()) {
-                            val a = addrs.nextElement()
-                            if (a is Inet4Address && !a.isLoopbackAddress) {
-                                localIp = a; break
-                            }
-                        }
-                        break
-                    }
-                }
+            val remote = InetAddress.getByName(TARGET_HOST)
+            findInterfaceFor(remote)?.let { (n, ip) ->
+                name = n
+                localIp = ip
             }
         } catch (e: Exception) {
             Log.w(TAG, "NetworkInterface 枚举失败: ${e.message}")
@@ -301,14 +287,44 @@ class PortForwarder(
 
         if (forceNotify || nowUp != wasUp) {
             val (status, msg) = if (nowUp) {
-                Status.IFACE_UP to "网卡已连接 (${name ?: TARGET_MAC})，正在转发 0.0.0.0:$listenPort → $TARGET_HOST:$TARGET_PORT"
+                Status.IFACE_UP to "网卡已连接 ($name / ${localIp?.hostAddress})，正在转发 0.0.0.0:$listenPort → $TARGET_HOST:$TARGET_PORT"
             } else {
-                Status.IFACE_DOWN to "未找到目标网卡 (MAC $TARGET_MAC)，转发暂停（保持监听 0.0.0.0:$listenPort）"
+                Status.IFACE_DOWN to "未找到子网含 $TARGET_HOST 的网卡，转发暂停（保持监听 0.0.0.0:$listenPort）"
             }
             onStatus(status, msg)
         }
     }
 
-    private fun formatMac(bytes: ByteArray): String =
-        bytes.joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+    /**
+     * 在 NetworkInterface 枚举里找「子网包含 remote」的网卡，返回其名称与匹配的本地 IPv4。
+     * 与 PointerService.findLocalAddressFor 使用同一套 prefix-length 子网匹配算法。
+     */
+    private fun findInterfaceFor(remote: InetAddress): Pair<String, InetAddress>? {
+        val remoteBytes = remote.address
+        val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
+        for (ni in ifaces) {
+            if (!ni.isUp || ni.isLoopback) continue
+            for (ia in ni.interfaceAddresses) {
+                val localAddr = ia.address ?: continue
+                if (localAddr.javaClass != remote.javaClass) continue
+                val prefix = ia.networkPrefixLength
+                val localBytes = localAddr.address
+                if (localBytes.size != remoteBytes.size) continue
+                val fullBytes = prefix / 8
+                val remainBits = prefix % 8
+                var match = true
+                for (i in 0 until fullBytes) {
+                    if (localBytes[i] != remoteBytes[i]) { match = false; break }
+                }
+                if (match && remainBits > 0 && fullBytes < localBytes.size) {
+                    val mask = (0xFF shl (8 - remainBits)) and 0xFF
+                    if ((localBytes[fullBytes].toInt() and mask) != (remoteBytes[fullBytes].toInt() and mask)) {
+                        match = false
+                    }
+                }
+                if (match) return ni.name to localAddr
+            }
+        }
+        return null
+    }
 }

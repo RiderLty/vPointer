@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 
 enum class ForwardStatus { INFO, OK, WARN, ERROR }
@@ -30,7 +31,7 @@ enum class ForwardStatus { INFO, OK, WARN, ERROR }
 private data class NicInfo(
     val name: String,
     val mac: String,
-    val ipv4: String?,
+    val ipv4s: List<String>,
     val isUp: Boolean,
     val isTarget: Boolean
 )
@@ -45,15 +46,14 @@ fun PortForwardScreen(
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
-    val targetMac = PortForwarder.TARGET_MAC
     val targetHost = PortForwarder.TARGET_HOST
     val targetPort = PortForwarder.TARGET_PORT
 
-    // 诊断：动态枚举本机网卡，展示系统实际读到的名称与 MAC（与 PortForwarder 过滤逻辑同源）
+    // 诊断：动态枚举本机网卡，展示系统实际读到的名称 / IP / MAC（与 PortForwarder 过滤逻辑同源）
     var nics by remember { mutableStateOf<List<NicInfo>>(emptyList()) }
     LaunchedEffect(Unit) {
         while (true) {
-            nics = withContext(Dispatchers.IO) { enumerateNics(targetMac) }
+            nics = withContext(Dispatchers.IO) { enumerateNics(targetHost) }
             delay(2000)
         }
     }
@@ -71,7 +71,7 @@ fun PortForwardScreen(
         )
 
         Text(
-            text = "将目标网卡（按 MAC $targetMac 识别）对端设备的 Web 配置转发到本机端口，供外部访问。上游固定转发到 $targetHost:$targetPort。",
+            text = "将目标网卡（按「子网包含 $targetHost」识别，如本机 192.168.73.2）对端设备的 Web 配置转发到本机端口，供外部访问。上游固定转发到 $targetHost:$targetPort。",
             fontSize = 14.sp,
             color = Color.Gray,
             modifier = Modifier.padding(bottom = 24.dp)
@@ -112,13 +112,13 @@ fun PortForwardScreen(
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
         Text(
-            text = "网卡识别诊断（目标 MAC: $targetMac）",
+            text = "网卡识别诊断（目标 IP: $targetHost）",
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(bottom = 8.dp)
         )
         Text(
-            text = "以下列出系统实际读到的网卡名称与 MAC，每 2 秒刷新。绿色行表示与目标 MAC 匹配。",
+            text = "以下列出系统实际读到的网卡名称 / IP / MAC，每 2 秒刷新。绿色行表示其子网包含目标 IP。",
             fontSize = 12.sp,
             color = Color.Gray,
             modifier = Modifier.padding(bottom = 8.dp)
@@ -183,8 +183,8 @@ private fun NicRow(nic: NicInfo) {
         )
         Text(
             text = buildString {
-                append("MAC: ").append(nic.mac)
-                nic.ipv4?.let { append("    IPv4: ").append(it) }
+                append("IP: ").append(if (nic.ipv4s.isEmpty()) "无" else nic.ipv4s.joinToString(", "))
+                append("    MAC: ").append(nic.mac)
                 if (nic.isTarget) append("    ✔ 匹配目标")
             },
             fontSize = 13.sp,
@@ -195,40 +195,48 @@ private fun NicRow(nic: NicInfo) {
 }
 
 /**
- * 枚举本机网卡，返回系统实际读到的名称 / MAC / IPv4 / up 状态，与 [PortForwarder] 的
- * 过滤逻辑使用同一套 API（[NetworkInterface.getHardwareAddress]），用于诊断为何目标网卡未被匹配。
+ * 枚举本机网卡，返回系统实际读到的名称 / IPv4 列表 / MAC / up 状态。匹配判定按「子网包含
+ * [targetHost]」进行（与 [PortForwarder.findInterfaceFor] 同一套算法），用于诊断为何目标网卡未被匹配。
  */
-private fun enumerateNics(targetMac: String): List<NicInfo> {
+private fun enumerateNics(targetHost: String): List<NicInfo> {
     val result = mutableListOf<NicInfo>()
     try {
+        val remote = InetAddress.getByName(targetHost)
         val ifaces = NetworkInterface.getNetworkInterfaces() ?: return result
         for (ni in ifaces) {
             if (ni.isLoopback) continue
             val mac = ni.hardwareAddress?.let { formatMac(it) } ?: "不可读(null)"
-            val ipv4 = runCatching {
-                val addrs = ni.inetAddresses
-                var ip: String? = null
-                while (addrs.hasMoreElements()) {
-                    val a = addrs.nextElement()
-                    if (a is Inet4Address && !a.isLoopbackAddress) {
-                        ip = a.hostAddress
-                        break
-                    }
+            val ipv4s = mutableListOf<String>()
+            var target = false
+            for (ia in ni.interfaceAddresses) {
+                val addr = ia.address ?: continue
+                if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                    ipv4s += addr.hostAddress
+                    if (sameSubnet(addr, ia.networkPrefixLength, remote)) target = true
                 }
-                ip
-            }.getOrNull()
-            result += NicInfo(
-                name = ni.name,
-                mac = mac,
-                ipv4 = ipv4,
-                isUp = ni.isUp,
-                isTarget = mac.equals(targetMac, ignoreCase = true)
-            )
+            }
+            result += NicInfo(ni.name, mac, ipv4s, ni.isUp, target)
         }
     } catch (_: Exception) {
         // 枚举失败：返回空列表，由调用方显示占位
     }
     return result
+}
+
+private fun sameSubnet(local: InetAddress, prefix: Short, remote: InetAddress): Boolean {
+    val lb = local.address
+    val rb = remote.address
+    if (lb.size != rb.size) return false
+    val fullBytes = prefix / 8
+    val remainBits = prefix % 8
+    for (i in 0 until fullBytes) {
+        if (lb[i] != rb[i]) return false
+    }
+    if (remainBits > 0 && fullBytes < lb.size) {
+        val mask = (0xFF shl (8 - remainBits)) and 0xFF
+        if ((lb[fullBytes].toInt() and mask) != (rb[fullBytes].toInt() and mask)) return false
+    }
+    return true
 }
 
 private fun formatMac(bytes: ByteArray): String =
