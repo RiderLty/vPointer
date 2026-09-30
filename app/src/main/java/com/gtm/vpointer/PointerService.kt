@@ -680,7 +680,9 @@ class PointerService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    // 隐私：标记为安全图层，录屏(MediaProjection)/截屏均采集不到光标窗口
+                    WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -740,6 +742,13 @@ class PointerService : Service() {
     ) : PointerRenderer {
         // 按目标显示器密度缩放，使光标物理大小与内置屏一致
         private val baseScale = densityScaleFor(display)
+        // 隐私：目标显示器支持安全输出(FLAG_SECURE，如 HDCP)时，把窗口标记为安全
+        // 图层，录屏/截屏采集不到光标。注意安全窗口在不支持安全内容的显示器上会
+        // 整窗空白，所以显示器不支持时降级为不加，宁可不防录屏也不能让光标消失。
+        private val secureFlag =
+            if (display.flags and Display.FLAG_SECURE != 0)
+                WindowManager.LayoutParams.FLAG_SECURE
+            else 0
         // 光标窗口偏移量：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
         // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
         private val cursorOffsetPx = 4
@@ -766,7 +775,8 @@ class PointerService : Service() {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                            secureFlag
                 )
                 clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                 setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -831,7 +841,8 @@ class PointerService : Service() {
             lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    secureFlag
             try {
                 window.attributes = lp
             } catch (e: Exception) {
