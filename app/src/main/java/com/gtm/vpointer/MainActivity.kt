@@ -112,6 +112,9 @@ class MainActivity : ComponentActivity() {
             mainPage = savedInstanceState.getInt("mainPage", 0)
             forwardListenPort = savedInstanceState.getString("forwardListenPort", "8000")
             forwardRunning = savedInstanceState.getBoolean("forwardRunning", false)
+            if (savedInstanceState.containsKey("selectedDisplayId")) {
+                selectedDisplayId = savedInstanceState.getInt("selectedDisplayId")
+            }
         }
 
         displayManagerHelper = DisplayManagerHelper(this)
@@ -271,6 +274,7 @@ class MainActivity : ComponentActivity() {
         outState.putInt("mainPage", mainPage)
         outState.putString("forwardListenPort", forwardListenPort)
         outState.putBoolean("forwardRunning", forwardRunning)
+        selectedDisplayId?.let { outState.putInt("selectedDisplayId", it) }
     }
 
     override fun onDestroy() {

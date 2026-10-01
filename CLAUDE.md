@@ -29,7 +29,7 @@ Android 应用（Kotlin + Jetpack Compose，单模块 `:app`），在安卓设�
 
 ### PointerService（`PointerService.kt`，核心）
 
-onCreate 时一次性绑定 UDP 6533、UDP 6534、TCP 6535 三个端口，任一失败全部回滚并 `stopSelf()`（端口冲突是常见启动失败原因）。三个接收器各自在 `GlobalScope.launch` 的无限循环里收包、解析，再 `Handler(mainLooper).post { handlePointer(x, y, show, down) }` 切回主线程驱动渲染器。
+onCreate 时一次性绑定 UDP 6533、UDP 6534、TCP 6535 三个端口，任一失败全部回滚并 `stopSelf()`（端口冲突是常见启动失败原因）。三个接收器使用跟随服务生命周期取消的 IO 协程收包、解析，再 `Handler(mainLooper).post { handlePointer(x, y, show, down) }` 切回主线程驱动渲染器。
 
 - **协议**：6533 文本 `x,y,show,down,0\n`；6534 二进制 `vmouse_t` 9 字节小端（int32 x + int32 y + uint8 state，bit0=show，bit1=down）；6535 TCP 11 字节（header `0x55 0xAA` + 9 字节 vmouse_t），header 用三态状态机逐字节滑动同步。TCP 连接建立时立即回发 1 字节屏幕方向，旋转时主动推送；`down` 期间方向上报节流到 1Hz（用 `DisplayListener` 兜底防漏发，勿移除）。
 - **旋转检测刻意不用传感器**：方向上报靠 `startDisplayListener()` 里 `DisplayManager.DisplayListener.onDisplayChanged`（旋转会改 default display 的 rotation 属性）。勿改回 `OrientationEventListener`——它会持续占用加速度计（实测 5Hz、服务常驻期间全天开启）并每 200ms 唤醒 CPU 做 `getDeviceRotation()`，是显著的常驻耗电。

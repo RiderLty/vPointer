@@ -33,13 +33,21 @@
             android:name=".PointerService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Receives pointer input over local network and renders a virtual cursor" />
+        </service>
 
         <service
             android:name=".PortForwardService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Forwards local TCP connections to a configured network interface" />
+        </service>
 
     </application>
 

@@ -9,7 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.InputStream
@@ -111,7 +111,8 @@ class PortForwarder(
             connections.forEach { runCatching { it.close() } }
             connections.clear()
         }
-        scope.cancel()
+        // 只取消当前任务，保留 Scope 供同一实例后续重新 start() 使用。
+        scope.coroutineContext.cancelChildren()
         listenPort = 0
         targetNetwork = null
         targetInterfaceName = null
@@ -166,13 +167,34 @@ class PortForwarder(
             Log.w(TAG, "upstream rejected: target network not present")
             return null
         }
-        val s = Socket()
+        var s = Socket()
         try {
-            when {
-                net != null -> runCatching { net.bindSocket(s) }
-                    .onFailure { Log.w(TAG, "network.bindSocket failed: ${it.message}") }
-                localIp != null -> runCatching { s.bind(InetSocketAddress(localIp, 0)) }
-                    .onFailure { Log.w(TAG, "bind localIp failed: ${it.message}") }
+            var boundToNetwork = false
+            if (net != null) {
+                boundToNetwork = runCatching {
+                    net.bindSocket(s)
+                    true
+                }.getOrElse {
+                    Log.w(TAG, "network.bindSocket failed: ${it.message}")
+                    runCatching { s.close() }
+                    // 某些实现可能在抛异常前已经修改了 Socket 状态，使用新 Socket 做源地址回退。
+                    s = Socket()
+                    false
+                }
+            }
+            if (net != null && !boundToNetwork && localIp == null) {
+                s.close()
+                return null
+            }
+            // bindSocket 失败时必须继续尝试源地址绑定，否则连接可能走默认网卡。
+            if (!boundToNetwork && localIp != null) {
+                try {
+                    s.bind(InetSocketAddress(localIp, 0))
+                } catch (e: Exception) {
+                    Log.w(TAG, "bind localIp failed: ${e.message}")
+                    s.close()
+                    return null
+                }
             }
             s.tcpNoDelay = true
             s.connect(InetSocketAddress(TARGET_HOST, TARGET_PORT), CONNECT_TIMEOUT_MS)
@@ -324,8 +346,10 @@ class PortForwarder(
         val lb = local.address
         val rb = remote.address
         if (lb.size != rb.size) return false
-        val fullBytes = prefix / 8
-        val remainBits = prefix % 8
+        val prefixLength = prefix.toInt()
+        if (prefixLength !in 0..(lb.size * 8)) return false
+        val fullBytes = prefixLength / 8
+        val remainBits = prefixLength % 8
         for (i in 0 until fullBytes) {
             if (lb[i] != rb[i]) return false
         }

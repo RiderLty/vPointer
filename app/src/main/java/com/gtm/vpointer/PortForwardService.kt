@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 
@@ -80,11 +81,19 @@ class PortForwardService : Service() {
 
     private fun buildNotification(text: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            NOTIF_CHANNEL, "端口转发", NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "网卡端口转发后台服务" }
-        nm.createNotificationChannel(channel)
-        return Notification.Builder(this, NOTIF_CHANNEL)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIF_CHANNEL, "端口转发", NotificationManager.IMPORTANCE_LOW
+            ).apply { description = "网卡端口转发后台服务" }
+            nm.createNotificationChannel(channel)
+        }
+        @Suppress("DEPRECATION")
+        val notificationBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, NOTIF_CHANNEL)
+        } else {
+            Notification.Builder(this)
+        }
+        return notificationBuilder
             .setContentTitle("vPointer 端口转发")
             .setContentText(text)
             .setSmallIcon(R.drawable.pointer_arrow)

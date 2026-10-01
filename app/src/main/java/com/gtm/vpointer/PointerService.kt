@@ -23,7 +23,10 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.OutputStream
 import java.net.DatagramPacket
@@ -81,6 +84,9 @@ class PointerService : Service() {
     // 按下状态方向上报节流：每个指针事件最高 250Hz，限制为 1Hz 避免冗余回发
     private var lastDownOrientationSendMs = 0L
 
+    // 所有网络协程跟随服务生命周期，避免服务停止后 GlobalScope 继续存活。
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     // handlePointer 去重：坐标/按下状态未变化时跳过窗口更新（binder IPC），
     // 控制端重复发包（可达 250Hz）时避免每包都调用 updateViewLayout。
     // 渲染器重建时需在 removeExistingPointer() 中重置，否则会跳过首次 setPosition。
@@ -107,8 +113,9 @@ class PointerService : Service() {
                     val localAddr = ia.address ?: continue
                     // 只匹配同类型（IPv4 对 IPv4）
                     if (localAddr.javaClass != remote.javaClass) continue
-                    val prefix = ia.networkPrefixLength
+                    val prefix = ia.networkPrefixLength.toInt()
                     val localBytes = localAddr.address
+                    if (prefix !in 0..(localBytes.size * 8)) continue
                     if (localBytes.size != remoteBytes.size) continue
                     // 按 prefix length 计算掩码，比较网络部分
                     val fullBytes = prefix / 8
@@ -141,13 +148,21 @@ class PointerService : Service() {
         displayManagerHelper = DisplayManagerHelper(this)
 
         // 前台服务通知，防止系统杀掉
-        val channel = android.app.NotificationChannel(
-            "vpointer_service", "vPointer 服务",
-            android.app.NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "虚拟光标后台服务" }
         val nm = getSystemService(android.app.NotificationManager::class.java)
-        nm.createNotificationChannel(channel)
-        val notification = android.app.Notification.Builder(this, "vpointer_service")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                "vpointer_service", "vPointer 服务",
+                android.app.NotificationManager.IMPORTANCE_LOW
+            ).apply { description = "虚拟光标后台服务" }
+            nm.createNotificationChannel(channel)
+        }
+        @Suppress("DEPRECATION")
+        val notificationBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.app.Notification.Builder(this, "vpointer_service")
+        } else {
+            android.app.Notification.Builder(this)
+        }
+        val notification = notificationBuilder
             .setContentTitle("vPointer")
             .setContentText("虚拟光标运行中")
             .setSmallIcon(R.drawable.pointer_arrow)
@@ -308,7 +323,7 @@ class PointerService : Service() {
 
     private fun startUdpReceiver() {
         val sock = socket ?: return
-        GlobalScope.launch {
+        serviceScope.launch {
             val buffer = ByteArray(1024)
             while (true) {
                 try {
@@ -319,7 +334,7 @@ class PointerService : Service() {
                     val rawLen = packet.length
                     val data = String(packet.data, 0, rawLen)
                     android.util.Log.d("PointerService", "UDP:6533 recv from ${packet.address.hostAddress}:${packet.port} localAddr=${localAddr?.hostAddress} rawLen=$rawLen data=\"$data\"")
-                    val values = data.split(",")
+                    val values = data.trim().split(",").map { it.trim() }
                     if (values.size == 5) {
                         val abs_x = values[0].toInt()
                         val abs_y = values[1].toInt()
@@ -330,6 +345,7 @@ class PointerService : Service() {
                         Handler(Looper.getMainLooper()).post {
                             handlePointer(abs_x, abs_y, show_int, downing_int)
                         }
+                        clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     } else {
                         android.util.Log.w("PointerService", "UDP:6533 bad format: expected 5 fields, got ${values.size}")
                     }
@@ -348,14 +364,14 @@ class PointerService : Service() {
     // state: bit0=show, bit1=down
     private fun startBinaryUdpReceiver() {
         val sock = socket6534 ?: return
-        GlobalScope.launch {
-            val buffer = ByteArray(9)
+        serviceScope.launch {
+            // 使用大于协议长度的缓冲区，才能区分 9 字节合法包和超长数据报。
+            val buffer = ByteArray(1024)
             while (true) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     sock.receive(packet)
                     val localAddr = findLocalAddressFor(packet.address)
-                    clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     val rawLen = packet.length
                     val hexDump = packet.data.take(rawLen).joinToString(" ") { "%02X".format(it) }
                     android.util.Log.d("PointerService", "UDP:6534 recv from ${packet.address.hostAddress}:${packet.port} localAddr=${localAddr?.hostAddress} len=$rawLen hex=[$hexDump]")
@@ -371,6 +387,7 @@ class PointerService : Service() {
                         Handler(Looper.getMainLooper()).post {
                             handlePointer(x, y, show, down)
                         }
+                        clients.add(ClientInfo(packet.address, packet.port, localAddr))
                     } else {
                         android.util.Log.w("PointerService", "UDP:6534 bad length: expected 9, got $rawLen")
                     }
@@ -388,7 +405,7 @@ class PointerService : Service() {
     // 连接建立后也会上报屏幕方向
     private fun startTcpServer() {
         val srv = serverSocket ?: return
-        GlobalScope.launch {
+        serviceScope.launch {
             android.util.Log.d("PointerService", "TCP:6535 server started, waiting for connections")
             while (true) {
                 try {
@@ -514,7 +531,7 @@ class PointerService : Service() {
             }
             if (downing_int == 1) {
                 // 按下时持续上报屏幕方向，但节流到 1Hz：指针事件最高 250Hz，
-                // 否则每秒会新建数百个 GlobalScope 协程向 Pico 回发冗余字节。
+                // 否则每秒会新建数百个协程向 Pico 回发冗余字节。
                 // 方向真正变化时还有 DisplayListener 兜底，不会漏发。
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastDownOrientationSendMs >= 1000) {
@@ -560,7 +577,7 @@ class PointerService : Service() {
             else -> 0x00
         }
         android.util.Log.d("PointerService", "sendDeviceOrientation rotation=$rotation byte=0x%02X udpClients=${clients.size} tcpClients=${tcpClients.size}".format(orientationByte.toInt() and 0xFF))
-        GlobalScope.launch {
+        serviceScope.launch {
             val data = byteArrayOf(orientationByte)
             val deadClients = mutableListOf<ClientInfo>()
             clients.forEach { client ->
@@ -614,6 +631,8 @@ class PointerService : Service() {
             val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             displayManager.unregisterDisplayListener(it)
         }
+        displayListener = null
+        serviceScope.cancel()
         // 端口绑定失败时已在 onCreate 广播 ERROR，不应再覆盖为 STOPPED
         if (portsBound) {
             sendStatusBroadcast(STATUS_STOPPED, "服务已停止")
