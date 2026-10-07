@@ -71,14 +71,12 @@ fun DisplaySelectScreen(
 
         // 光标样式：预制图标 + 自定义 PNG（在显示器列表上方）
         Row(
-            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = "光标样式",
                 fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
+                fontWeight = FontWeight.Bold
             )
             // 自定义 PNG 不参与调色，选自定义图标时禁用
             TextButton(
