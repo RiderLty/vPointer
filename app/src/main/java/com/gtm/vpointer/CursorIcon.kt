@@ -28,7 +28,6 @@ object CursorPresets {
         CursorPreset("hand", "手型", R.drawable.cursor_hand),
         CursorPreset("crosshair", "十字", R.drawable.cursor_crosshair),
         CursorPreset("dot", "圆点", R.drawable.cursor_dot),
-        CursorPreset("ibeam", "文本", R.drawable.cursor_ibeam),
     )
 
     /** 未知 id（如旧数据）回退到默认箭头 */
@@ -76,6 +75,25 @@ class CursorIconStore(context: Context) :
         writableDatabase.insertWithOnConflict(TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /** 光标调色，NO_COLOR 表示保持原色。仅对预制图标生效，自定义 PNG 不调色。 */
+    fun getSelectedColor(): Int {
+        readableDatabase.query(
+            TABLE, arrayOf(COLUMN_VALUE), "$COLUMN_KEY = ?", arrayOf(KEY_CURSOR_COLOR),
+            null, null, null
+        ).use { c ->
+            if (c.moveToFirst()) return c.getString(0).toIntOrNull() ?: NO_COLOR
+        }
+        return NO_COLOR
+    }
+
+    fun setSelectedColor(color: Int) {
+        val cv = ContentValues().apply {
+            put(COLUMN_KEY, KEY_CURSOR_COLOR)
+            put(COLUMN_VALUE, color.toString())
+        }
+        writableDatabase.insertWithOnConflict(TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     companion object {
         private const val DB_NAME = "vpointer.db"
         private const val DB_VERSION = 1
@@ -83,6 +101,9 @@ class CursorIconStore(context: Context) :
         private const val COLUMN_KEY = "key"
         private const val COLUMN_VALUE = "value"
         private const val KEY_CURSOR_ICON = "cursor_icon"
+        private const val KEY_CURSOR_COLOR = "cursor_color"
+        /** 表示"原色"（不调色）的哨兵值 */
+        const val NO_COLOR = -1
     }
 }
 
@@ -95,12 +116,20 @@ object CursorImages {
 
     /** 按当前持久化的选中项加载光标 Drawable；自定义图不可用时回退默认箭头 */
     fun loadDrawable(context: Context): Drawable {
-        val id = CursorIconStore(context).getSelectedCursorId()
+        val store = CursorIconStore(context)
+        val id = store.getSelectedCursorId()
         if (id == CursorPresets.CUSTOM_ID) {
             decodeCustomFile(context)?.let { return BitmapDrawable(context.resources, it) }
         }
         val presetId = if (id == CursorPresets.CUSTOM_ID) CursorPresets.DEFAULT_ID else id
-        return ContextCompat.getDrawable(context, CursorPresets.presetOr(presetId).resId)!!
+        val drawable = ContextCompat.getDrawable(context, CursorPresets.presetOr(presetId).resId)!!
+            .mutate()
+        // 预制图标按用户选择调色；mutate() 避免污染 drawable 资源缓存
+        val color = store.getSelectedColor()
+        if (color != CursorIconStore.NO_COLOR) {
+            drawable.setTint(color)
+        }
+        return drawable
     }
 
     suspend fun loadCustomBitmap(context: Context): Bitmap? = withContext(Dispatchers.IO) {

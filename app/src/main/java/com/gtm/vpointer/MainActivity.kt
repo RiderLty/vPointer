@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
     private val cursorIconStore by lazy { CursorIconStore(this) }
     private var selectedCursorId by mutableStateOf(CursorPresets.DEFAULT_ID)
     private var customCursorBitmap by mutableStateOf<Bitmap?>(null)
+    private var cursorColor by mutableStateOf(CursorIconStore.NO_COLOR)
 
     // 系统图片选择器：选一张 PNG 作为自定义光标
     private val pickCursorImage =
@@ -138,6 +139,7 @@ class MainActivity : ComponentActivity() {
 
         // 恢复上次选择的光标样式（SQLite 持久化）
         selectedCursorId = cursorIconStore.getSelectedCursorId()
+        cursorColor = cursorIconStore.getSelectedColor()
         if (selectedCursorId == CursorPresets.CUSTOM_ID) {
             loadCustomCursorPreview()
         }
@@ -209,6 +211,7 @@ class MainActivity : ComponentActivity() {
                                 cursorPresets = CursorPresets.all,
                                 selectedCursorId = selectedCursorId,
                                 customCursorBitmap = customCursorBitmap,
+                                cursorColor = cursorColor,
                                 onDisplaySelected = { displayId ->
                                     selectedDisplayId = displayId
                                 },
@@ -217,6 +220,9 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onPickCustomImage = {
                                     pickCursorImage.launch("image/png")
+                                },
+                                onCursorColorSelected = { color ->
+                                    onCursorColorSelected(color)
                                 },
                                 onStartService = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
@@ -286,6 +292,13 @@ class MainActivity : ComponentActivity() {
         if (id == selectedCursorId) return
         cursorIconStore.setSelectedCursorId(id)
         selectedCursorId = id
+        notifyCursorIconChanged()
+    }
+
+    private fun onCursorColorSelected(color: Int) {
+        if (color == cursorColor) return
+        cursorIconStore.setSelectedColor(color)
+        cursorColor = color
         notifyCursorIconChanged()
     }
 

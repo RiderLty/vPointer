@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -18,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -25,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gtm.vpointer.CursorPreset
 import com.gtm.vpointer.CursorPresets
+import com.gtm.vpointer.CursorIconStore
 import com.gtm.vpointer.DisplayInfo
 
 enum class ServiceState { IDLE, RUNNING, ERROR }
@@ -38,12 +41,15 @@ fun DisplaySelectScreen(
     cursorPresets: List<CursorPreset>,
     selectedCursorId: String,
     customCursorBitmap: Bitmap?,
+    cursorColor: Int,
     onDisplaySelected: (Int) -> Unit,
     onCursorPresetSelected: (String) -> Unit,
     onPickCustomImage: () -> Unit,
+    onCursorColorSelected: (Int) -> Unit,
     onStartService: () -> Unit,
     onStopService: () -> Unit
 ) {
+    var showColorDialog by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -64,11 +70,25 @@ fun DisplaySelectScreen(
         )
 
         // 光标样式：预制图标 + 自定义 PNG（在显示器列表上方）
-        Text(
-            text = "光标样式",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "光标样式",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            // 自定义 PNG 不参与调色，选自定义图标时禁用
+            TextButton(
+                onClick = { showColorDialog = true },
+                enabled = selectedCursorId != CursorPresets.CUSTOM_ID,
+                contentPadding = PaddingValues(horizontal = 8.dp)
+            ) {
+                Text("调色", fontSize = 13.sp)
+            }
+        }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = "选择光标图标，或使用自定义 PNG 图片",
@@ -86,6 +106,11 @@ fun DisplaySelectScreen(
                     Image(
                         painter = painterResource(preset.resId),
                         contentDescription = preset.label,
+                        colorFilter = if (cursorColor != CursorIconStore.NO_COLOR) {
+                            ColorFilter.tint(Color(cursorColor))
+                        } else {
+                            null
+                        },
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -171,6 +196,96 @@ fun DisplaySelectScreen(
             }
         }
     }
+
+    if (showColorDialog) {
+        CursorColorDialog(
+            currentColor = cursorColor,
+            onSelect = { color ->
+                onCursorColorSelected(color)
+                showColorDialog = false
+            },
+            onDismiss = { showColorDialog = false }
+        )
+    }
+}
+
+/** 光标可选颜色：第一个是"原色"（不调色） */
+private val cursorColorOptions = listOf(
+    "原色" to CursorIconStore.NO_COLOR,
+    "黑" to 0xFF000000.toInt(),
+    "白" to 0xFFFFFFFF.toInt(),
+    "红" to 0xFFE53935.toInt(),
+    "橙" to 0xFFFF9800.toInt(),
+    "绿" to 0xFF4CAF50.toInt(),
+    "蓝" to 0xFF2196F3.toInt(),
+    "紫" to 0xFF9C27B0.toInt()
+)
+
+@Composable
+fun CursorColorDialog(
+    currentColor: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("光标颜色") },
+        text = {
+            Column {
+                cursorColorOptions.chunked(4).forEach { rowColors ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.padding(vertical = 6.dp)
+                    ) {
+                        rowColors.forEach { (name, color) ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (color == CursorIconStore.NO_COLOR) {
+                                                MaterialTheme.colorScheme.surfaceVariant
+                                            } else {
+                                                Color(color)
+                                            }
+                                        )
+                                        .border(
+                                            2.dp,
+                                            if (color == currentColor) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                Color.Transparent
+                                            },
+                                            CircleShape
+                                        )
+                                        .clickable { onSelect(color) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (color == CursorIconStore.NO_COLOR) {
+                                        Text("原", fontSize = 11.sp, color = Color.Gray)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = name,
+                                    fontSize = 10.sp,
+                                    color = if (color == currentColor) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        Color.Gray
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        }
+    )
 }
 
 @Composable
