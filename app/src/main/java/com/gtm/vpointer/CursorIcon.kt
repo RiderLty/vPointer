@@ -97,16 +97,20 @@ object CursorImages {
     fun loadDrawable(context: Context): Drawable {
         val id = CursorIconStore(context).getSelectedCursorId()
         if (id == CursorPresets.CUSTOM_ID) {
-            loadCustomBitmap(context)?.let { return BitmapDrawable(context.resources, it) }
+            decodeCustomFile(context)?.let { return BitmapDrawable(context.resources, it) }
         }
         val presetId = if (id == CursorPresets.CUSTOM_ID) CursorPresets.DEFAULT_ID else id
         return ContextCompat.getDrawable(context, CursorPresets.presetOr(presetId).resId)!!
     }
 
     suspend fun loadCustomBitmap(context: Context): Bitmap? = withContext(Dispatchers.IO) {
+        decodeCustomFile(context)
+    }
+
+    private fun decodeCustomFile(context: Context): Bitmap? {
         val f = file(context)
-        if (!f.exists()) return@withContext null
-        try {
+        if (!f.exists()) return null
+        return try {
             BitmapFactory.decodeFile(f.absolutePath)
         } catch (e: Exception) {
             null
