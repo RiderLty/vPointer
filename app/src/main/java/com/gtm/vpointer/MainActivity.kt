@@ -4,12 +4,15 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,10 +25,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.gtm.vpointer.ui.screen.DisplaySelectScreen
 import com.gtm.vpointer.ui.screen.ForwardStatus
 import com.gtm.vpointer.ui.screen.PortForwardScreen
 import com.gtm.vpointer.ui.screen.ServiceState
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +47,17 @@ class MainActivity : ComponentActivity() {
     private var forwardStatusText by mutableStateOf("")
     private var forwardStatusLevel by mutableStateOf(ForwardStatus.INFO)
     private var forwardNics by mutableStateOf<List<NicInfo>>(emptyList())
+
+    // 光标样式相关状态
+    private val cursorIconStore by lazy { CursorIconStore(this) }
+    private var selectedCursorId by mutableStateOf(CursorPresets.DEFAULT_ID)
+    private var customCursorBitmap by mutableStateOf<Bitmap?>(null)
+
+    // 系统图片选择器：选一张 PNG 作为自定义光标
+    private val pickCursorImage =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) onCustomImagePicked(uri)
+        }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -120,6 +136,12 @@ class MainActivity : ComponentActivity() {
         displayManagerHelper = DisplayManagerHelper(this)
         displays = displayManagerHelper.getAllDisplays()
 
+        // 恢复上次选择的光标样式（SQLite 持久化）
+        selectedCursorId = cursorIconStore.getSelectedCursorId()
+        if (selectedCursorId == CursorPresets.CUSTOM_ID) {
+            loadCustomCursorPreview()
+        }
+
         // 默认选择内置显示器
         if (selectedDisplayId == null && displays.isNotEmpty()) {
             selectedDisplayId = displays.firstOrNull { it.isInternal }?.displayId
@@ -184,8 +206,17 @@ class MainActivity : ComponentActivity() {
                                 selectedDisplayId = selectedDisplayId,
                                 serviceState = serviceState,
                                 serviceMessage = serviceMessage,
+                                cursorPresets = CursorPresets.all,
+                                selectedCursorId = selectedCursorId,
+                                customCursorBitmap = customCursorBitmap,
                                 onDisplaySelected = { displayId ->
                                     selectedDisplayId = displayId
+                                },
+                                onCursorPresetSelected = { id ->
+                                    onCursorPresetSelected(id)
+                                },
+                                onPickCustomImage = {
+                                    pickCursorImage.launch("image/png")
                                 },
                                 onStartService = {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this@MainActivity)) {
@@ -247,6 +278,53 @@ class MainActivity : ComponentActivity() {
         // 启动（与 PortForwardService 一致），否则应用退到后台时 startService 会抛
         // IllegalStateException。
         ContextCompat.startForegroundService(this, serviceIntent)
+    }
+
+    // ---- 光标样式 ----
+
+    private fun onCursorPresetSelected(id: String) {
+        if (id == selectedCursorId) return
+        cursorIconStore.setSelectedCursorId(id)
+        selectedCursorId = id
+        notifyCursorIconChanged()
+    }
+
+    private fun onCustomImagePicked(uri: Uri) {
+        lifecycleScope.launch {
+            // SAF 返回的 Uri 是临时的，先拷贝进应用私有目录再引用
+            val ok = CursorImages.saveCustomImage(applicationContext, uri)
+            if (!ok) {
+                Toast.makeText(this@MainActivity, "无法读取所选图片", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            customCursorBitmap = CursorImages.loadCustomBitmap(applicationContext)
+            selectedCursorId = CursorPresets.CUSTOM_ID
+            cursorIconStore.setSelectedCursorId(CursorPresets.CUSTOM_ID)
+            notifyCursorIconChanged()
+        }
+    }
+
+    private fun loadCustomCursorPreview() {
+        lifecycleScope.launch {
+            val bmp = CursorImages.loadCustomBitmap(applicationContext)
+            if (bmp != null) {
+                customCursorBitmap = bmp
+            } else {
+                // 自定义图片缺失（被清理等），回退默认箭头
+                selectedCursorId = CursorPresets.DEFAULT_ID
+                cursorIconStore.setSelectedCursorId(CursorPresets.DEFAULT_ID)
+            }
+        }
+    }
+
+    /** 服务运行中时通知 PointerService 热更新光标图标；未运行则下次启动时生效 */
+    private fun notifyCursorIconChanged() {
+        if (serviceState == ServiceState.RUNNING) {
+            startService(
+                Intent(this, PointerService::class.java)
+                    .setAction(PointerService.ACTION_UPDATE_CURSOR_ICON)
+            )
+        }
     }
 
     private fun startForward() {

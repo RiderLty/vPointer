@@ -1,20 +1,30 @@
 package com.gtm.vpointer.ui.screen
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gtm.vpointer.CursorPreset
+import com.gtm.vpointer.CursorPresets
 import com.gtm.vpointer.DisplayInfo
 
 enum class ServiceState { IDLE, RUNNING, ERROR }
@@ -25,7 +35,12 @@ fun DisplaySelectScreen(
     selectedDisplayId: Int?,
     serviceState: ServiceState,
     serviceMessage: String,
+    cursorPresets: List<CursorPreset>,
+    selectedCursorId: String,
+    customCursorBitmap: Bitmap?,
     onDisplaySelected: (Int) -> Unit,
+    onCursorPresetSelected: (String) -> Unit,
+    onPickCustomImage: () -> Unit,
     onStartService: () -> Unit,
     onStopService: () -> Unit
 ) {
@@ -47,6 +62,58 @@ fun DisplaySelectScreen(
             color = Color.Gray,
             modifier = Modifier.padding(bottom = 24.dp)
         )
+
+        // 光标样式：预制图标 + 自定义 PNG（在显示器列表上方）
+        Text(
+            text = "光标样式",
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "选择光标图标，或使用自定义 PNG 图片",
+            fontSize = 13.sp,
+            color = Color.Gray
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(cursorPresets, key = { it.id }) { preset ->
+                CursorStyleItem(
+                    label = preset.label,
+                    selected = preset.id == selectedCursorId,
+                    onClick = { onCursorPresetSelected(preset.id) }
+                ) {
+                    Image(
+                        painter = painterResource(preset.resId),
+                        contentDescription = preset.label,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+            item {
+                CursorStyleItem(
+                    label = "自定义",
+                    selected = selectedCursorId == CursorPresets.CUSTOM_ID,
+                    onClick = onPickCustomImage
+                ) {
+                    val preview = customCursorBitmap
+                    if (preview != null) {
+                        Image(
+                            bitmap = preview.asImageBitmap(),
+                            contentDescription = "自定义光标预览",
+                            modifier = Modifier.size(28.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = "选择自定义图片",
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(20.dp))
 
         LazyColumn(
             modifier = Modifier.weight(1f),
@@ -103,6 +170,45 @@ fun DisplaySelectScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun CursorStyleItem(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val backgroundColor = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val borderColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.Transparent
+    }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(backgroundColor)
+                .border(2.dp, borderColor, RoundedCornerShape(12.dp))
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            content()
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray
+        )
     }
 }
 

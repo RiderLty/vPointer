@@ -5,7 +5,6 @@ import android.app.Presentation
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
@@ -49,6 +48,9 @@ class PointerService : Service() {
         const val STATUS_RUNNING = "running"
         const val STATUS_ERROR = "error"
         const val STATUS_STOPPED = "stopped"
+
+        // 服务运行期间切换光标图标时，MainActivity 以此 action 启动服务做热更新
+        const val ACTION_UPDATE_CURSOR_ICON = "com.gtm.vpointer.UPDATE_CURSOR_ICON"
 
         // TCP header 同步状态机
         private const val TCP_STATE_SYNC = 0      // 等待 0x55
@@ -216,6 +218,13 @@ class PointerService : Service() {
             android.util.Log.e("PointerService", "onStartCommand: ports not bound, aborting")
             return START_NOT_STICKY
         }
+
+        // 光标图标热更新：仅刷新图片，不重建窗口、不触碰接收器
+        if (intent?.action == ACTION_UPDATE_CURSOR_ICON) {
+            renderer?.refreshIcon()
+            return START_STICKY
+        }
+
         val displayId = intent?.getIntExtra(MainActivity.EXTRA_DISPLAY_ID, Display.DEFAULT_DISPLAY)
             ?: Display.DEFAULT_DISPLAY
         android.util.Log.d("PointerService", "onStartCommand called with displayId: $displayId")
@@ -650,13 +659,17 @@ class PointerService : Service() {
         fun hide()
         fun setPosition(x: Int, y: Int)
         fun setScale(scale: Float)
+        fun refreshIcon()
         fun destroy()
     }
+
+    private fun loadCursorDrawable(): android.graphics.drawable.Drawable =
+        CursorImages.loadDrawable(this)
 
     /** 创建光标 ImageView，左上角为锚点 */
     private fun createPointerImageView(): ImageView {
         return ImageView(this).apply {
-            setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.pointer_arrow))
+            setImageDrawable(loadCursorDrawable())
             alpha = 0f
             pivotX = 0f
             pivotY = 0f
@@ -738,6 +751,10 @@ class PointerService : Service() {
         override fun setScale(scale: Float) {
             imageView.scaleX = scale
             imageView.scaleY = scale
+        }
+
+        override fun refreshIcon() {
+            imageView.setImageDrawable(loadCursorDrawable())
         }
 
         override fun destroy() {
@@ -862,6 +879,11 @@ class PointerService : Service() {
             // 按压系数叠加到密度基准缩放上
             imageView.scaleX = baseScale * scale
             imageView.scaleY = baseScale * scale
+        }
+
+        override fun refreshIcon() {
+            // 窗口是 WRAP_CONTENT，换图后 ImageView requestLayout 会带着窗口一起重排
+            imageView.setImageDrawable(loadCursorDrawable())
         }
 
         override fun destroy() {
