@@ -83,6 +83,12 @@ class PointerService : Service() {
     private val sendSockets = ConcurrentHashMap<InetAddress, DatagramSocket>()
     private val tcpClients = ConcurrentHashMap.newKeySet<OutputStream>()
     private var lastRotation = -1
+    // 外接显示器接入期间方向恒为 0：光标显示在外接屏上，手机自身旋转不影响坐标，
+    // 上报真实旋转反而会让控制端坐标系错乱。与 DisplaySelectScreen 的显示器枚举
+    // 同源（DisplayManagerHelper.getAllDisplays，存在 isInternal=false 即认为接入）。
+    // 网络协程也会读该标记，用 @Volatile 保证可见性。
+    @Volatile
+    private var externalDisplayConnected = false
     // 按下状态方向上报节流：每个指针事件最高 250Hz，限制为 1Hz 避免冗余回发
     private var lastDownOrientationSendMs = 0L
 
@@ -296,9 +302,16 @@ class PointerService : Service() {
         if (displayListener != null) return
         // 记录当前屏幕方向，仅真实变化时上报，避免注册后首次属性变化误发
         lastRotation = getDeviceRotation()
+        // 服务启动时外接屏可能已接入，先做一次初始判定
+        externalDisplayConnected = hasExternalDisplay()
         displayListener = object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) {
-                // 新显示器插入，不需要处理
+                if (displayId != Display.DEFAULT_DISPLAY) {
+                    // 外接屏接入：立即发送方向 0，之后只要外接屏还在就恒发 0
+                    externalDisplayConnected = true
+                    android.util.Log.d("PointerService", "External display $displayId connected, orientation forced to 0")
+                    sendDeviceOrientation(Surface.ROTATION_0)
+                }
             }
 
             override fun onDisplayRemoved(displayId: Int) {
@@ -309,6 +322,14 @@ class PointerService : Service() {
                         targetDisplayId = Display.DEFAULT_DISPLAY
                         createFloatingPointer()
                     }
+                }
+                // 枚举剩余显示器（可能与内置屏并存多个外接屏，最后一个拔出才算断开）
+                if (displayId != Display.DEFAULT_DISPLAY && !hasExternalDisplay()) {
+                    // 外接屏全部断开：立即读手机当前真实旋转并发送，不等下次旋转变化
+                    externalDisplayConnected = false
+                    val rotation = getDeviceRotation()
+                    android.util.Log.d("PointerService", "External displays all removed, reporting real rotation=$rotation")
+                    sendDeviceOrientation(rotation)
                 }
             }
 
@@ -321,7 +342,10 @@ class PointerService : Service() {
                     val rotation = getDeviceRotation()
                     if (rotation != lastRotation) {
                         lastRotation = rotation
-                        sendDeviceOrientation(rotation)
+                        // 外接屏接入期间不跟随手机旋转上报（方向恒为 0）
+                        if (!externalDisplayConnected) {
+                            sendDeviceOrientation(rotation)
+                        }
                     }
                 }
             }
@@ -422,8 +446,8 @@ class PointerService : Service() {
                     val remoteAddr = clientSocket.remoteSocketAddress
                     tcpClients.add(clientSocket.getOutputStream())
                     android.util.Log.d("PointerService", "TCP:6535 client connected from $remoteAddr, total=${tcpClients.size}")
-                    // 立即发送当前屏幕方向
-                    val rotation = getDeviceRotation()
+                    // 立即发送当前屏幕方向（外接屏接入期间恒为 0）
+                    val rotation = effectiveRotation()
                     android.util.Log.d("PointerService", "TCP:6535 sending initial orientation=$rotation to $remoteAddr")
                     sendTcpOrientation(clientSocket.getOutputStream())
                     launch { handleTcpClient(clientSocket) }
@@ -504,7 +528,8 @@ class PointerService : Service() {
 
     private fun sendTcpOrientation(output: OutputStream) {
         try {
-            val rotation = getDeviceRotation()
+            // 外接屏接入期间初始方向同样恒为 0
+            val rotation = effectiveRotation()
             val orientationByte: Byte = when (rotation) {
                 Surface.ROTATION_0 -> 0x00
                 Surface.ROTATION_90 -> 0x01
@@ -577,15 +602,32 @@ class PointerService : Service() {
         return display?.rotation ?: Surface.ROTATION_0
     }
 
+    /**
+     * 是否接入了外接显示器。与 MainActivity 的显示器选择列表同源：
+     * DisplayManagerHelper 枚举的显示器中存在非内置屏（isInternal=false）即认为接入。
+     */
+    private fun hasExternalDisplay(): Boolean {
+        return displayManagerHelper.getAllDisplays().any { !it.isInternal }
+    }
+
+    /**
+     * 当前应上报的方向：外接屏接入期间恒为 ROTATION_0，否则为手机真实旋转。
+     */
+    private fun effectiveRotation(): Int {
+        return if (externalDisplayConnected) Surface.ROTATION_0 else getDeviceRotation()
+    }
+
     private fun sendDeviceOrientation(rotation: Int) {
-        val orientationByte: Byte = when (rotation) {
+        // 兜底：外接屏接入期间无论调用方传入什么都发送 0
+        val effective = if (externalDisplayConnected) Surface.ROTATION_0 else rotation
+        val orientationByte: Byte = when (effective) {
             Surface.ROTATION_0 -> 0x00
             Surface.ROTATION_90 -> 0x01
             Surface.ROTATION_180 -> 0x02
             Surface.ROTATION_270 -> 0x03
             else -> 0x00
         }
-        android.util.Log.d("PointerService", "sendDeviceOrientation rotation=$rotation byte=0x%02X udpClients=${clients.size} tcpClients=${tcpClients.size}".format(orientationByte.toInt() and 0xFF))
+        android.util.Log.d("PointerService", "sendDeviceOrientation rotation=$effective byte=0x%02X udpClients=${clients.size} tcpClients=${tcpClients.size}".format(orientationByte.toInt() and 0xFF))
         serviceScope.launch {
             val data = byteArrayOf(orientationByte)
             val deadClients = mutableListOf<ClientInfo>()
