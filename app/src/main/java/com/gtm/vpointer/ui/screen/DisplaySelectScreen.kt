@@ -66,6 +66,22 @@ fun DisplaySelectScreen(
             text = "选择要在哪个显示器上显示虚拟光标",
             fontSize = 14.sp,
             color = Color.Gray,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        // 方向模式指示：与 PointerService 的外接屏判定同源（displays 已过滤
+        // 虚拟显示器，存在非内置屏即接入外接屏、方向恒发 0）
+        val externalDisplays = displays.filter { !it.isInternal }
+        Text(
+            text = if (externalDisplays.isNotEmpty()) {
+                "强制不旋转模式：已开启（外接显示器 ${externalDisplays.size} 台：" +
+                    externalDisplays.joinToString("、") { it.name } +
+                    "），方向恒为 0"
+            } else {
+                "强制不旋转模式：未开启（未检测到外接显示器，方向跟随手机旋转）"
+            },
+            fontSize = 13.sp,
+            color = if (externalDisplays.isNotEmpty()) Color(0xFF2E7D32) else Color.Gray,
             modifier = Modifier.padding(bottom = 24.dp)
         )
 
