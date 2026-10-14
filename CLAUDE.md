@@ -55,7 +55,7 @@ onCreate 时一次性绑定 UDP 6533、UDP 6534、TCP 6535 三个端口，任一
 
 ### 显示器枚举（`DisplayManagerHelper.kt`）
 
-包装 `DisplayManager`，产出 `DisplayInfo`（含 `isInternal` 判断：`displayId == Display.DEFAULT_DISPLAY`）。`MainActivity` 和 `PointerService` 各持有一份实例。`MainActivity` 用它列显示器、选目标显示器（`EXTRA_DISPLAY_ID` 传给服务）；目标显示器被拔出时 `PointerService` 通过 `DisplayListener` 回退到内置屏。
+包装 `DisplayManager`，产出 `DisplayInfo`（含 `isInternal` 判断：`displayId == Display.DEFAULT_DISPLAY`），并**过滤 `TYPE_VIRTUAL` 虚拟显示器**（录屏软件用 MediaProjection 创建；系统录屏的私有虚拟屏不进 `getDisplays()` 但 `DisplayListener.onDisplayAdded` 照常回调，故外接屏判定必须走本枚举、按 type 过滤，不能只看回调 displayId）。`MainActivity` 和 `PointerService` 各持有一份实例。`MainActivity` 用它列显示器、选目标显示器（`EXTRA_DISPLAY_ID` 传给服务）；目标显示器被拔出时 `PointerService` 通过 `DisplayListener` 回退到内置屏。外接屏接入期间方向恒发 0，全部断开后立即上报真实旋转（判定同源：`hasExternalDisplay()`）。
 
 ### 其他
 

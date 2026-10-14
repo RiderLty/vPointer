@@ -85,7 +85,8 @@ class PointerService : Service() {
     private var lastRotation = -1
     // 外接显示器接入期间方向恒为 0：光标显示在外接屏上，手机自身旋转不影响坐标，
     // 上报真实旋转反而会让控制端坐标系错乱。与 DisplaySelectScreen 的显示器枚举
-    // 同源（DisplayManagerHelper.getAllDisplays，存在 isInternal=false 即认为接入）。
+    // 同源（DisplayManagerHelper.getAllDisplays，已排除录屏等创建的 TYPE_VIRTUAL
+    // 虚拟显示器，存在 isInternal=false 即认为接入）。
     // 网络协程也会读该标记，用 @Volatile 保证可见性。
     @Volatile
     private var externalDisplayConnected = false
@@ -306,10 +307,13 @@ class PointerService : Service() {
         externalDisplayConnected = hasExternalDisplay()
         displayListener = object : DisplayManager.DisplayListener {
             override fun onDisplayAdded(displayId: Int) {
-                if (displayId != Display.DEFAULT_DISPLAY) {
+                // 不能只看 displayId 是否非默认屏：系统录屏等创建的私有虚拟显示器
+                // 枚举不到（getDisplays 不返回）但本回调照常触发，会误判为外接屏。
+                // 必须重新枚举并按 type 过滤（hasExternalDisplay 已排除 TYPE_VIRTUAL）。
+                if (!externalDisplayConnected && hasExternalDisplay()) {
                     // 外接屏接入：立即发送方向 0，之后只要外接屏还在就恒发 0
                     externalDisplayConnected = true
-                    android.util.Log.d("PointerService", "External display $displayId connected, orientation forced to 0")
+                    android.util.Log.d("PointerService", "External display connected, orientation forced to 0")
                     sendDeviceOrientation(Surface.ROTATION_0)
                 }
             }
@@ -323,8 +327,9 @@ class PointerService : Service() {
                         createFloatingPointer()
                     }
                 }
-                // 枚举剩余显示器（可能与内置屏并存多个外接屏，最后一个拔出才算断开）
-                if (displayId != Display.DEFAULT_DISPLAY && !hasExternalDisplay()) {
+                // 重新枚举判定（可能与内置屏并存多个外接屏，最后一个拔出才算断开；
+                // 虚拟显示器被销毁也会走到这里，但 externalDisplayConnected 为 false 时无动作）
+                if (externalDisplayConnected && !hasExternalDisplay()) {
                     // 外接屏全部断开：立即读手机当前真实旋转并发送，不等下次旋转变化
                     externalDisplayConnected = false
                     val rotation = getDeviceRotation()
@@ -603,8 +608,10 @@ class PointerService : Service() {
     }
 
     /**
-     * 是否接入了外接显示器。与 MainActivity 的显示器选择列表同源：
-     * DisplayManagerHelper 枚举的显示器中存在非内置屏（isInternal=false）即认为接入。
+     * 是否接入了真实外接显示器（HDMI/DP/无线投屏）。与 MainActivity 的显示器选择
+     * 列表同源：DisplayManagerHelper 枚举时已排除 TYPE_VIRTUAL 虚拟显示器（录屏
+     * 软件创建，且系统录屏的私有虚拟屏枚举不到但仍会触发 DisplayListener 回调，
+     * 故接入/断开判定必须走本枚举，不能只看回调的 displayId）。
      */
     private fun hasExternalDisplay(): Boolean {
         return displayManagerHelper.getAllDisplays().any { !it.isInternal }

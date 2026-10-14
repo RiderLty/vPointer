@@ -13,6 +13,8 @@ data class DisplayInfo(
     val width: Int,
     val height: Int,
     val isInternal: Boolean,
+    /** Display.TYPE_INTERNAL / TYPE_EXTERNAL / TYPE_HDMI / TYPE_WIFI / TYPE_OVERLAY / TYPE_VIRTUAL */
+    val type: Int,
     val state: Int,
     val densityDpi: Int,
     val refreshRate: Float
@@ -23,8 +25,20 @@ class DisplayManagerHelper(private val context: Context) {
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private var listener: DisplayManager.DisplayListener? = null
 
+    /**
+     * 列出可用于光标渲染的显示器，已排除虚拟显示器。
+     *
+     * 录屏软件（MediaProjection / createVirtualDisplay）会创建 TYPE_VIRTUAL 虚拟显示器：
+     * - 公开（public）的会出现在 getDisplays() 里，若不排除会被误认为外接屏；
+     * - 私有（private，如系统录屏）的不会出现在 getDisplays()，但 DisplayListener
+     *   的 onDisplayAdded 仍会回调——所以判定外接屏必须走本枚举（按 type 过滤），
+     *   不能只看 onDisplayAdded 的 displayId 是否非默认屏，否则系统录屏会"不显示
+     *   在列表里却触发方向恒为 0"。
+     */
     fun getAllDisplays(): List<DisplayInfo> {
-        return displayManager.displays.map { display ->
+        return displayManager.displays
+            .filter { it.type != Display.TYPE_VIRTUAL }
+            .map { display ->
             val mode = display.mode
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
@@ -35,6 +49,7 @@ class DisplayManagerHelper(private val context: Context) {
                 width = mode.physicalWidth,
                 height = mode.physicalHeight,
                 isInternal = display.displayId == Display.DEFAULT_DISPLAY,
+                type = display.type,
                 state = display.state,
                 densityDpi = metrics.densityDpi,
                 refreshRate = display.refreshRate
