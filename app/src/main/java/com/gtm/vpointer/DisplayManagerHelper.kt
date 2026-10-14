@@ -13,8 +13,6 @@ data class DisplayInfo(
     val width: Int,
     val height: Int,
     val isInternal: Boolean,
-    /** Display.TYPE_INTERNAL / TYPE_EXTERNAL / TYPE_HDMI / TYPE_WIFI / TYPE_OVERLAY / TYPE_VIRTUAL */
-    val type: Int,
     val state: Int,
     val densityDpi: Int,
     val refreshRate: Float
@@ -26,18 +24,25 @@ class DisplayManagerHelper(private val context: Context) {
     private var listener: DisplayManager.DisplayListener? = null
 
     /**
-     * 列出可用于光标渲染的显示器，已排除虚拟显示器。
+     * 列出可用于光标渲染的显示器：内置屏 + 带 FLAG_PRESENTATION 的屏。
      *
-     * 录屏软件（MediaProjection / createVirtualDisplay）会创建 TYPE_VIRTUAL 虚拟显示器：
-     * - 公开（public）的会出现在 getDisplays() 里，若不排除会被误认为外接屏；
-     * - 私有（private，如系统录屏）的不会出现在 getDisplays()，但 DisplayListener
-     *   的 onDisplayAdded 仍会回调——所以判定外接屏必须走本枚举（按 type 过滤），
-     *   不能只看 onDisplayAdded 的 displayId 是否非默认屏，否则系统录屏会"不显示
-     *   在列表里却触发方向恒为 0"。
+     * 注意：不能用 Display.getType() 区分虚拟显示器——它不是公开 SDK API
+     * （android.jar 里没有，编译报 Unresolved reference）。改用公开的
+     * FLAG_PRESENTATION 标志（API 17+）：HDMI/DP/无线投屏等真实外接屏都带
+     * （Presentation 能在其上渲染的前提），而录屏软件用 MediaProjection /
+     * createVirtualDisplay 创建的虚拟屏不带。
+     *
+     * 另一个平台陷阱：系统录屏创建的私有（private）虚拟显示器不会出现在
+     * getDisplays() 里，但 DisplayListener 的 onDisplayAdded 照常回调——所以
+     * 判定外接屏接入必须走本枚举复查，不能只看回调的 displayId 是否非默认屏，
+     * 否则系统录屏会"不显示在列表里却触发方向恒为 0"。
      */
     fun getAllDisplays(): List<DisplayInfo> {
         return displayManager.displays
-            .filter { it.type != Display.TYPE_VIRTUAL }
+            .filter {
+                it.displayId == Display.DEFAULT_DISPLAY ||
+                    (it.flags and Display.FLAG_PRESENTATION) != 0
+            }
             .map { display ->
             val mode = display.mode
             val metrics = DisplayMetrics()
@@ -49,7 +54,6 @@ class DisplayManagerHelper(private val context: Context) {
                 width = mode.physicalWidth,
                 height = mode.physicalHeight,
                 isInternal = display.displayId == Display.DEFAULT_DISPLAY,
-                type = display.type,
                 state = display.state,
                 densityDpi = metrics.densityDpi,
                 refreshRate = display.refreshRate
