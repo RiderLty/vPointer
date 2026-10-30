@@ -202,16 +202,21 @@ private fun AccessLinkRow(url: String) {
 // （com.lenovo.leos.appstore 注册为系统里唯一的 http handler），直接
 // ACTION_VIEW 会打开商店。因此显式挑选浏览器包名启动，绕过系统解析。
 private val STORE_PKG_HINTS = listOf("appstore", "leos", "market", "vending", "store")
+// 优先级按用户偏好排序：Chrome、Edge、Via、Firefox，其余国产浏览器兜底
 private val KNOWN_BROWSERS = listOf(
-    "com.android.chrome",
-    "com.quark.browser",
-    "com.zui.browser",
-    "com.UCMobile",
-    "com.microsoft.emmx",
-    "com.mozilla.firefox",
-    "com.heytap.browser",
-    "com.vivo.browser",
-    "com.mi.globalbrowser"
+    "com.android.chrome",     // Chrome
+    "com.microsoft.emmx",     // Edge
+    "com.mark.via",           // Via
+    "org.mozilla.firefox",    // Firefox
+    "com.quark.browser",      // 夸克
+    "com.zui.browser",        // ZUI 浏览器
+    "com.UCMobile",           // UC
+    "com.tencent.mtt",        // QQ 浏览器
+    "com.baidu.searchbox",    // 百度
+    "com.heytap.browser",     // OPPO
+    "com.vivo.browser",       // vivo
+    "com.mi.globalbrowser",   // 小米
+    "com.opera.browser"       // Opera
 )
 
 private fun openInBrowser(context: Context, url: String) {
