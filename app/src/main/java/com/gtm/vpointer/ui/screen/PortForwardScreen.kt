@@ -96,12 +96,14 @@ fun PortForwardScreen(
         }
 
         // 目标网卡就绪（转发生效）后，给出可点击的访问地址：
-        // 本机全部 IPv4（含回环 127.0.0.1）+ 监听端口，点击唤起浏览器，长按复制。
+        // 本机全部 IPv4（含回环 127.0.0.1，排除目标网卡自身的 IP）+ 监听端口，
+        // 点击唤起浏览器，长按复制。
         // NIC 列表由 PortForwarder 每 2 秒广播一次，无需额外探测。
         if (running && statusLevel == ForwardStatus.OK) {
             val port = listenPort.toIntOrNull() ?: PortForwardService.DEFAULT_PORT
             val urls = remember(nics, port) {
-                (listOf("127.0.0.1") + nics.filter { it.isUp }.flatMap { it.ipv4s })
+                (listOf("127.0.0.1") +
+                    nics.filter { it.isUp && !it.isTarget }.flatMap { it.ipv4s })
                     .distinct()
                     .map { "http://$it:$port" }
             }
@@ -184,13 +186,7 @@ private fun AccessLinkRow(url: String) {
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
-                onClick = {
-                    runCatching {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    }.onFailure {
-                        Toast.makeText(context, "无法打开浏览器", Toast.LENGTH_SHORT).show()
-                    }
-                },
+                onClick = { openInBrowser(context, url) },
                 onLongClick = {
                     val cm = context
                         .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -200,6 +196,49 @@ private fun AccessLinkRow(url: String) {
             )
             .padding(vertical = 4.dp)
     )
+}
+
+// 部分 ROM（实测 TB322FC/ZUI）把 http 链接的默认处理器劫持到应用商店
+// （com.lenovo.leos.appstore 注册为系统里唯一的 http handler），直接
+// ACTION_VIEW 会打开商店。因此显式挑选浏览器包名启动，绕过系统解析。
+private val STORE_PKG_HINTS = listOf("appstore", "leos", "market", "vending", "store")
+private val KNOWN_BROWSERS = listOf(
+    "com.android.chrome",
+    "com.quark.browser",
+    "com.zui.browser",
+    "com.UCMobile",
+    "com.microsoft.emmx",
+    "com.mozilla.firefox",
+    "com.heytap.browser",
+    "com.vivo.browser",
+    "com.mi.globalbrowser"
+)
+
+private fun openInBrowser(context: Context, url: String) {
+    val pm = context.packageManager
+    val probe = Intent(Intent.ACTION_VIEW, Uri.parse("http://localhost/"))
+    @Suppress("DEPRECATION")
+    val browsers = pm.queryIntentActivities(probe, 0)
+        .map { it.activityInfo.packageName }
+        .distinct()
+        .filter { pkg -> STORE_PKG_HINTS.none { pkg.lowercase().contains(it) } }
+    // 查询被 ROM 过滤或全是商店类组件时，退回按已知浏览器包名找已安装的
+    val pkg = browsers.firstOrNull() ?: KNOWN_BROWSERS.firstOrNull {
+        runCatching { pm.getPackageInfo(it, 0) }.isSuccess
+    }
+    val launch = if (pkg != null) {
+        Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(pkg)
+    } else {
+        Intent(Intent.ACTION_VIEW, Uri.parse(url))
+    }
+    runCatching { context.startActivity(launch) }.onFailure {
+        // 显式启动失败（包已被卸载/无匹配 activity 等），退回系统解析
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            Toast.makeText(context, "无法打开浏览器", Toast.LENGTH_SHORT).show()
+        }
+    }
 }
 
 @Composable
