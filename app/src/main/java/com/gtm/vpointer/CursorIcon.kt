@@ -94,6 +94,29 @@ class CursorIconStore(context: Context) :
         writableDatabase.insertWithOnConflict(TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /**
+     * 实验性实心光标模式：关闭触摸穿透并取消透明度。
+     * 穿透模式要求窗口半透明，光标窗口又需偏移实现穿透，导致点击位置与光标显示错开；
+     * 实心模式用于消除该偏移。默认关闭。
+     */
+    fun isSolidCursorEnabled(): Boolean {
+        readableDatabase.query(
+            TABLE, arrayOf(COLUMN_VALUE), "$COLUMN_KEY = ?", arrayOf(KEY_SOLID_CURSOR),
+            null, null, null
+        ).use { c ->
+            if (c.moveToFirst()) return c.getString(0).toBooleanStrictOrNull() ?: false
+        }
+        return false
+    }
+
+    fun setSolidCursorEnabled(enabled: Boolean) {
+        val cv = ContentValues().apply {
+            put(COLUMN_KEY, KEY_SOLID_CURSOR)
+            put(COLUMN_VALUE, enabled.toString())
+        }
+        writableDatabase.insertWithOnConflict(TABLE, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     companion object {
         private const val DB_NAME = "vpointer.db"
         private const val DB_VERSION = 1
@@ -102,6 +125,7 @@ class CursorIconStore(context: Context) :
         private const val COLUMN_VALUE = "value"
         private const val KEY_CURSOR_ICON = "cursor_icon"
         private const val KEY_CURSOR_COLOR = "cursor_color"
+        private const val KEY_SOLID_CURSOR = "solid_cursor"
         /** 表示"原色"（不调色）的哨兵值 */
         const val NO_COLOR = -1
     }

@@ -52,6 +52,10 @@ class PointerService : Service() {
         // 服务运行期间切换光标图标时，MainActivity 以此 action 启动服务做热更新
         const val ACTION_UPDATE_CURSOR_ICON = "com.gtm.vpointer.UPDATE_CURSOR_ICON"
 
+        // 服务运行期间切换实验性实心光标模式（关闭触摸穿透 + 不透明）的热更新 action
+        const val ACTION_UPDATE_SOLID_CURSOR = "com.gtm.vpointer.UPDATE_SOLID_CURSOR"
+        const val EXTRA_SOLID_CURSOR = "solid_cursor"
+
         // TCP header 同步状态机
         private const val TCP_STATE_SYNC = 0      // 等待 0x55
         private const val TCP_STATE_HEADER = 1    // 已收到 0x55，等待 0xAA
@@ -62,6 +66,10 @@ class PointerService : Service() {
     private var renderer: PointerRenderer? = null
 
     private var isShow = false
+
+    // 实验性实心光标：窗口不再 FLAG_NOT_TOUCHABLE（会拦截光标区域触摸），
+    // 透明度为 1，且不再为触摸穿透做坐标偏移。默认关闭，持久化在 CursorIconStore。
+    private var solidCursor = false
 
     // 延迟到 onCreate 创建，失败时可回滚
     private var socket: DatagramSocket? = null
@@ -155,6 +163,7 @@ class PointerService : Service() {
     override fun onCreate() {
         super.onCreate()
         displayManagerHelper = DisplayManagerHelper(this)
+        solidCursor = CursorIconStore(this).isSolidCursorEnabled()
 
         // 前台服务通知，防止系统杀掉
         val nm = getSystemService(android.app.NotificationManager::class.java)
@@ -232,8 +241,20 @@ class PointerService : Service() {
             return START_STICKY
         }
 
+        // 实心光标模式热更新：只改窗口 flags / 透明度 / 偏移，不重建窗口
+        if (intent?.action == ACTION_UPDATE_SOLID_CURSOR) {
+            solidCursor = intent.getBooleanExtra(EXTRA_SOLID_CURSOR, solidCursor)
+            android.util.Log.d("PointerService", "ACTION_UPDATE_SOLID_CURSOR solid=$solidCursor")
+            renderer?.setSolidCursor(solidCursor)
+            return START_STICKY
+        }
+
         val displayId = intent?.getIntExtra(MainActivity.EXTRA_DISPLAY_ID, Display.DEFAULT_DISPLAY)
             ?: Display.DEFAULT_DISPLAY
+        // 启动参数显式携带模式时以它为准；否则沿用 onCreate 读到的持久化设置
+        if (intent != null && intent.hasExtra(EXTRA_SOLID_CURSOR)) {
+            solidCursor = intent.getBooleanExtra(EXTRA_SOLID_CURSOR, solidCursor)
+        }
         android.util.Log.d("PointerService", "onStartCommand called with displayId: $displayId")
 
         // 如果显示器 ID 变化，重新创建窗口
@@ -709,8 +730,16 @@ class PointerService : Service() {
         fun setPosition(x: Int, y: Int)
         fun setScale(scale: Float)
         fun refreshIcon()
+        /** 切换实验性实心光标模式：不可穿透触摸 + 不透明 + 取消穿透偏移 */
+        fun setSolidCursor(enabled: Boolean)
         fun destroy()
     }
+
+    /**
+     * 光标透明度：默认半透明（穿透模式下系统对遮挡触摸的窗口透明度有要求）；
+     * 实心模式完全不透明。
+     */
+    private fun cursorAlpha(solid: Boolean): Float = if (solid) 1f else 0.75f
 
     private fun loadCursorDrawable(): android.graphics.drawable.Drawable =
         CursorImages.loadDrawable(this)
@@ -751,6 +780,19 @@ class PointerService : Service() {
         private val windowManager =
             context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         private val imageView = createPointerImageView()
+        private var solid = this@PointerService.solidCursor
+        private var attached = false
+        private var visible = false
+
+        /** 实心模式移除 FLAG_NOT_TOUCHABLE，让窗口拦截光标区域的触摸 */
+        private fun buildFlags(): Int {
+            var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            if (!solid) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            return flags
+        }
+
         private val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -758,17 +800,13 @@ class PointerService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
                 WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            buildFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 0
             y = 0
         }
-        private var attached = false
 
         override fun show() {
             if (!attached) {
@@ -779,10 +817,12 @@ class PointerService : Service() {
                     android.util.Log.e("PointerService", "Overlay addView failed", e)
                 }
             }
-            fade(imageView, 0.75f)
+            visible = true
+            fade(imageView, cursorAlpha(solid))
         }
 
         override fun hide() {
+            visible = false
             fade(imageView, 0f)
         }
 
@@ -806,6 +846,20 @@ class PointerService : Service() {
             imageView.setImageDrawable(loadCursorDrawable())
         }
 
+        override fun setSolidCursor(enabled: Boolean) {
+            if (solid == enabled) return
+            solid = enabled
+            if (attached) {
+                params.flags = buildFlags()
+                try {
+                    windowManager.updateViewLayout(imageView, params)
+                } catch (e: Exception) {
+                    android.util.Log.e("PointerService", "Overlay update flags failed", e)
+                }
+            }
+            if (visible) fade(imageView, cursorAlpha(solid))
+        }
+
         override fun destroy() {
             if (attached) {
                 try {
@@ -825,10 +879,25 @@ class PointerService : Service() {
     ) : PointerRenderer {
         // 按目标显示器密度缩放，使光标物理大小与内置屏一致
         private val baseScale = densityScaleFor(display)
+        private var solid = this@PointerService.solidCursor
         // 光标窗口偏移量：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
         // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
-        private val cursorOffsetPx = 4
+        // 实心模式（不可穿透）不需要偏移，偏移反而会让光标与坐标错开。
+        private val cursorOffsetPx: Int get() = if (solid) 0 else 4
         private val imageView = createPointerImageView()
+        // 记录最近一次坐标：切换实心模式时窗口偏移量变化，需要用新偏移重放位置
+        private var lastPosX: Int? = null
+        private var lastPosY: Int? = null
+        private var visible = false
+
+        /** 实心模式移除 FLAG_NOT_TOUCHABLE，让窗口拦截光标区域的触摸 */
+        private fun buildFlags(): Int {
+            var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            if (!solid) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            return flags
+        }
         private val container = FrameLayout(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
             addView(
@@ -847,12 +916,7 @@ class PointerService : Service() {
                 // 不要调用 setType 覆盖窗口类型：Presentation 内部已用
                 // TYPE_PRESENTATION(2037) 创建了绑定到目标 Display 的 window context，
                 // 强行改成 TYPE_APPLICATION_OVERLAY(2038) 会导致 window type mismatch 异常。
-                addFlags(
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                )
+                addFlags(buildFlags())
                 clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                 setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 // 关键：窗口设为光标大小(WRAP_CONTENT)并按坐标移动，而非全屏容器。
@@ -896,10 +960,12 @@ class PointerService : Service() {
             }
             imageView.scaleX = baseScale
             imageView.scaleY = baseScale
-            fade(imageView, 0.75f)
+            visible = true
+            fade(imageView, cursorAlpha(solid))
         }
 
         override fun hide() {
+            visible = false
             fade(imageView, 0f)
         }
 
@@ -907,16 +973,15 @@ class PointerService : Service() {
             // 移动整个光标小窗口，而非在全屏窗口内 translation，
             // 这样窗口仅覆盖光标自身像素，外接屏其余区域触摸正常穿透。
             val window = presentation.window ?: return
+            lastPosX = x
+            lastPosY = y
             val lp = window.attributes
-            // 光标偏移 4px：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
-            // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
+            // 穿透模式下光标偏移 4px：触摸点恰好落在光标窗口上时会被 DecorView
+            // 拦截，偏移后触摸点落在窗口之外，直接穿透到下方应用。
             lp.x = x + cursorOffsetPx
             lp.y = y + cursorOffsetPx
             // 显式重置 flags，确保某些 ROM 在 attributes 赋回时不会丢失标志
-            lp.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            lp.flags = buildFlags()
             try {
                 window.attributes = lp
             } catch (e: Exception) {
@@ -933,6 +998,26 @@ class PointerService : Service() {
         override fun refreshIcon() {
             // 窗口是 WRAP_CONTENT，换图后 ImageView requestLayout 会带着窗口一起重排
             imageView.setImageDrawable(loadCursorDrawable())
+        }
+
+        override fun setSolidCursor(enabled: Boolean) {
+            if (solid == enabled) return
+            solid = enabled
+            val window = presentation.window
+            if (window != null) {
+                val lp = window.attributes
+                lp.flags = buildFlags()
+                try {
+                    window.attributes = lp
+                } catch (e: Exception) {
+                    android.util.Log.e("PointerService", "Presentation update flags failed", e)
+                }
+                // 偏移量随模式变化，按新偏移重放最近坐标
+                val x = lastPosX
+                val y = lastPosY
+                if (x != null && y != null) setPosition(x, y)
+            }
+            if (visible) fade(imageView, cursorAlpha(solid))
         }
 
         override fun destroy() {

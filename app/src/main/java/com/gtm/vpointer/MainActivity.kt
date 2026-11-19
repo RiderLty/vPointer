@@ -53,6 +53,8 @@ class MainActivity : ComponentActivity() {
     private var selectedCursorId by mutableStateOf(CursorPresets.DEFAULT_ID)
     private var customCursorBitmap by mutableStateOf<Bitmap?>(null)
     private var cursorColor by mutableStateOf(CursorIconStore.NO_COLOR)
+    // 实验性开关：实心光标（不可穿透触摸 + 不透明）
+    private var solidCursor by mutableStateOf(false)
 
     // 系统图片选择器：选一张 PNG 作为自定义光标
     private val pickCursorImage =
@@ -140,6 +142,7 @@ class MainActivity : ComponentActivity() {
         // 恢复上次选择的光标样式（SQLite 持久化）
         selectedCursorId = cursorIconStore.getSelectedCursorId()
         cursorColor = cursorIconStore.getSelectedColor()
+        solidCursor = cursorIconStore.isSolidCursorEnabled()
         if (selectedCursorId == CursorPresets.CUSTOM_ID) {
             loadCustomCursorPreview()
         }
@@ -212,6 +215,8 @@ class MainActivity : ComponentActivity() {
                                 selectedCursorId = selectedCursorId,
                                 customCursorBitmap = customCursorBitmap,
                                 cursorColor = cursorColor,
+                                solidCursor = solidCursor,
+                                onSolidCursorChanged = { enabled -> onSolidCursorChanged(enabled) },
                                 onDisplaySelected = { displayId ->
                                     selectedDisplayId = displayId
                                 },
@@ -279,6 +284,7 @@ class MainActivity : ComponentActivity() {
         serviceMessage = ""
         val serviceIntent = Intent(this, PointerService::class.java).apply {
             putExtra(EXTRA_DISPLAY_ID, displayId)
+            putExtra(PointerService.EXTRA_SOLID_CURSOR, solidCursor)
         }
         // PointerService 在 onCreate 即调用 startForeground，需用 startForegroundService
         // 启动（与 PortForwardService 一致），否则应用退到后台时 startService 会抛
@@ -327,6 +333,20 @@ class MainActivity : ComponentActivity() {
                 selectedCursorId = CursorPresets.DEFAULT_ID
                 cursorIconStore.setSelectedCursorId(CursorPresets.DEFAULT_ID)
             }
+        }
+    }
+
+    /** 持久化实心光标模式；服务运行中时热更新窗口 flags/透明度，未运行则下次启动生效 */
+    private fun onSolidCursorChanged(enabled: Boolean) {
+        if (enabled == solidCursor) return
+        cursorIconStore.setSolidCursorEnabled(enabled)
+        solidCursor = enabled
+        if (serviceState == ServiceState.RUNNING) {
+            startService(
+                Intent(this, PointerService::class.java)
+                    .setAction(PointerService.ACTION_UPDATE_SOLID_CURSOR)
+                    .putExtra(PointerService.EXTRA_SOLID_CURSOR, enabled)
+            )
         }
     }
 

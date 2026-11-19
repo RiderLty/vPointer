@@ -43,6 +43,8 @@ onCreate 时一次性绑定 UDP 6533、UDP 6534、TCP 6535 三个端口，任一
 - `OverlayRenderer`：内置屏用 `WindowManager` 的 `TYPE_APPLICATION_OVERLAY` 覆盖层。
 - `PresentationRenderer`：外接屏**必须**用 `Presentation`。普通应用无法把覆盖层窗口加到副屏（系统会静默重定位回内置屏）。且窗口必须设为 WRAP_CONTENT、跟随坐标移动（`window.attributes.x/y`），不能全屏——全屏 Presentation 即使带 `FLAG_NOT_TOUCHABLE` 也会在部分 ROM 上拦截外接屏触摸。光标相对触摸点偏移 4px（`cursorOffsetPx`）实现触摸穿透。按显示器 DPI 密度缩放（`densityScaleFor`）保持物理大小一致。
 
+另有一个实验性「实心光标」开关（`CursorIconStore` 持久化，默认关闭）：开启后两个渲染器都去掉 `FLAG_NOT_TOUCHABLE`、alpha 改为 1，`PresentationRenderer` 的穿透偏移归零。运行中切换走 `ACTION_UPDATE_SOLID_CURSOR` 热更新；修改渲染逻辑时两个实现都要同步处理该模式。
+
 修改渲染逻辑时，两个实现必须同步改动，且保留上述注释里记录的平台陷阱。
 
 ### 多网卡路由（PointerService）

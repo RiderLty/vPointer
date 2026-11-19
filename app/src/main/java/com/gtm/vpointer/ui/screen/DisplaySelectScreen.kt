@@ -42,10 +42,12 @@ fun DisplaySelectScreen(
     selectedCursorId: String,
     customCursorBitmap: Bitmap?,
     cursorColor: Int,
+    solidCursor: Boolean,
     onDisplaySelected: (Int) -> Unit,
     onCursorPresetSelected: (String) -> Unit,
     onPickCustomImage: () -> Unit,
     onCursorColorSelected: (Int) -> Unit,
+    onSolidCursorChanged: (Boolean) -> Unit,
     onStartService: () -> Unit,
     onStopService: () -> Unit
 ) {
@@ -151,6 +153,35 @@ fun DisplaySelectScreen(
                     }
                 }
             }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 实验性开关：默认关闭（保持现有的半透明 + 触摸穿透行为）
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "实心光标（实验性）",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (solidCursor) {
+                        "已开启：光标不透明且不穿透触摸，光标所在区域会拦截点击"
+                    } else {
+                        "默认关闭：光标半透明并穿透触摸。开启后可消除点击位置与光标显示的偏移"
+                    },
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+            }
+            Switch(
+                checked = solidCursor,
+                onCheckedChange = onSolidCursorChanged
+            )
         }
         Spacer(modifier = Modifier.height(20.dp))
 
