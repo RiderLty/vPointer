@@ -170,9 +170,9 @@ fun DisplaySelectScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = if (solidCursor) {
-                        "已开启：光标不透明且不穿透触摸，光标所在区域会拦截点击"
+                        "已开启：光标不透明，窗口不再穿透触摸（4px 偏移始终保留）"
                     } else {
-                        "默认关闭：光标半透明并穿透触摸。开启后可消除点击位置与光标显示的偏移"
+                        "默认关闭：光标半透明并穿透触摸（4px 偏移始终保留）"
                     },
                     fontSize = 12.sp,
                     color = Color.Gray

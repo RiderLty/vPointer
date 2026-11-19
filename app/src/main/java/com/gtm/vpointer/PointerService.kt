@@ -56,6 +56,11 @@ class PointerService : Service() {
         const val ACTION_UPDATE_SOLID_CURSOR = "com.gtm.vpointer.UPDATE_SOLID_CURSOR"
         const val EXTRA_SOLID_CURSOR = "solid_cursor"
 
+        // 光标窗口相对坐标的固定偏移，内外屏一致、始终生效：
+        // 触摸点落在光标窗口之外，点击才能穿透到下方应用
+        // （部分 ROM 上 Presentation 的 DecorView 不认 FLAG_NOT_TOUCHABLE）。
+        private const val CURSOR_OFFSET_PX = 4
+
         // TCP header 同步状态机
         private const val TCP_STATE_SYNC = 0      // 等待 0x55
         private const val TCP_STATE_HEADER = 1    // 已收到 0x55，等待 0xAA
@@ -67,8 +72,8 @@ class PointerService : Service() {
 
     private var isShow = false
 
-    // 实验性实心光标：窗口不再 FLAG_NOT_TOUCHABLE（会拦截光标区域触摸），
-    // 透明度为 1，且不再为触摸穿透做坐标偏移。默认关闭，持久化在 CursorIconStore。
+    // 实验性实心光标：只影响两件事——是否带 FLAG_NOT_TOUCHABLE、透明度 0.75/1。
+    // 4px 窗口偏移与开关无关，内外屏始终保留。默认关闭，持久化在 CursorIconStore。
     private var solidCursor = false
 
     // 延迟到 onCreate 创建，失败时可回滚
@@ -730,7 +735,7 @@ class PointerService : Service() {
         fun setPosition(x: Int, y: Int)
         fun setScale(scale: Float)
         fun refreshIcon()
-        /** 切换实验性实心光标模式：不可穿透触摸 + 不透明 + 取消穿透偏移 */
+        /** 切换实验性实心光标模式：是否可穿透触摸 + 透明度（4px 偏移不变） */
         fun setSolidCursor(enabled: Boolean)
         fun destroy()
     }
@@ -828,8 +833,9 @@ class PointerService : Service() {
 
         override fun setPosition(x: Int, y: Int) {
             if (!attached) return
-            params.x = x
-            params.y = y
+            // 与外接屏一致：固定偏移 4px，触摸点落在窗口之外
+            params.x = x + CURSOR_OFFSET_PX
+            params.y = y + CURSOR_OFFSET_PX
             try {
                 windowManager.updateViewLayout(imageView, params)
             } catch (e: Exception) {
@@ -880,14 +886,7 @@ class PointerService : Service() {
         // 按目标显示器密度缩放，使光标物理大小与内置屏一致
         private val baseScale = densityScaleFor(display)
         private var solid = this@PointerService.solidCursor
-        // 光标窗口偏移量：触摸点恰好落在光标窗口上时会被 DecorView 拦截，
-        // 偏移后触摸点落在窗口之外，直接穿透到下方应用。
-        // 实心模式（不可穿透）不需要偏移，偏移反而会让光标与坐标错开。
-        private val cursorOffsetPx: Int get() = if (solid) 0 else 4
         private val imageView = createPointerImageView()
-        // 记录最近一次坐标：切换实心模式时窗口偏移量变化，需要用新偏移重放位置
-        private var lastPosX: Int? = null
-        private var lastPosY: Int? = null
         private var visible = false
 
         /** 实心模式移除 FLAG_NOT_TOUCHABLE，让窗口拦截光标区域的触摸 */
@@ -973,13 +972,11 @@ class PointerService : Service() {
             // 移动整个光标小窗口，而非在全屏窗口内 translation，
             // 这样窗口仅覆盖光标自身像素，外接屏其余区域触摸正常穿透。
             val window = presentation.window ?: return
-            lastPosX = x
-            lastPosY = y
             val lp = window.attributes
-            // 穿透模式下光标偏移 4px：触摸点恰好落在光标窗口上时会被 DecorView
-            // 拦截，偏移后触摸点落在窗口之外，直接穿透到下方应用。
-            lp.x = x + cursorOffsetPx
-            lp.y = y + cursorOffsetPx
+            // 固定偏移 4px：触摸点落在光标窗口之外，避免被 DecorView 拦截，
+            // 直接穿透到下方应用。内外屏一致，与实心光标开关无关。
+            lp.x = x + CURSOR_OFFSET_PX
+            lp.y = y + CURSOR_OFFSET_PX
             // 显式重置 flags，确保某些 ROM 在 attributes 赋回时不会丢失标志
             lp.flags = buildFlags()
             try {
@@ -1012,10 +1009,6 @@ class PointerService : Service() {
                 } catch (e: Exception) {
                     android.util.Log.e("PointerService", "Presentation update flags failed", e)
                 }
-                // 偏移量随模式变化，按新偏移重放最近坐标
-                val x = lastPosX
-                val y = lastPosY
-                if (x != null && y != null) setPosition(x, y)
             }
             if (visible) fade(imageView, cursorAlpha(solid))
         }
