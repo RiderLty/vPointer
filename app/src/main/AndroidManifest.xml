@@ -58,6 +58,17 @@
                 android:value="Forwards local TCP connections to a configured network interface" />
         </service>
 
+        <!-- Lua 悬浮日志：WS 客户端 + 悬浮文字窗/按钮条 -->
+        <service
+            android:name=".lua.LuaLogService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Streams Lua log lines from a local WebSocket and renders them in a touch-through overlay" />
+        </service>
+
     </application>
 
 </manifest>
