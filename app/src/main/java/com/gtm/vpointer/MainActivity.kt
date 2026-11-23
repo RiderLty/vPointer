@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Display
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,11 +27,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.gtm.vpointer.lua.LuaLogService
+import com.gtm.vpointer.lua.LuaLogStore
+import com.gtm.vpointer.lua.NetBinder
 import com.gtm.vpointer.ui.screen.DisplaySelectScreen
 import com.gtm.vpointer.ui.screen.ForwardStatus
+import com.gtm.vpointer.ui.screen.LuaLogScreen
+import com.gtm.vpointer.ui.screen.LuaLogStatus
 import com.gtm.vpointer.ui.screen.PortForwardScreen
 import com.gtm.vpointer.ui.screen.ServiceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
@@ -47,6 +57,21 @@ class MainActivity : ComponentActivity() {
     private var forwardStatusText by mutableStateOf("")
     private var forwardStatusLevel by mutableStateOf(ForwardStatus.INFO)
     private var forwardNics by mutableStateOf<List<NicInfo>>(emptyList())
+
+    // Lua 悬浮日志相关状态（配置持久化在 LuaLogStore / SharedPreferences）
+    // 目标地址固定为 ESP 网卡那一侧（LuaLogService.TARGET_HOST/PORT），界面不再提供输入框
+    private val luaLogStore by lazy { LuaLogStore(this) }
+    private var luaFilter by mutableStateOf(LuaLogStore.DEFAULT_FILTER)
+    private var luaLines by mutableStateOf(LuaLogStore.DEFAULT_LINES.toFloat())
+    private var luaFontSp by mutableStateOf(LuaLogStore.DEFAULT_FONT_SP.toFloat())
+    private var luaOpacity by mutableStateOf(LuaLogStore.DEFAULT_OPACITY.toFloat())
+    private var luaRunning by mutableStateOf(false)
+    private var luaEditMode by mutableStateOf(false)
+    private var luaStatusText by mutableStateOf("")
+    private var luaStatusLevel by mutableStateOf(LuaLogStatus.INFO)
+    private var luaNics by mutableStateOf<List<NicInfo>>(emptyList())
+    /** 样式下发节流用：合并滑块的高频 onValueChange */
+    private var luaStyleJob: Job? = null
 
     // 光标样式相关状态
     private val cursorIconStore by lazy { CursorIconStore(this) }
@@ -118,6 +143,56 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var lastLuaStatus = ""
+
+    private val luaStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val status = intent.getStringExtra(LuaLogService.EXTRA_STATUS) ?: return
+            val message = intent.getStringExtra(LuaLogService.EXTRA_MESSAGE) ?: ""
+            android.util.Log.d("MainActivity", "Lua status: $status - $message")
+            // 状态跃迁时刷一次网卡列表，避免「状态说没网卡、列表还显示 eth0」的自相矛盾
+            if (status != lastLuaStatus) {
+                lastLuaStatus = status
+                if (status != LuaLogService.STATUS_STOPPED) refreshLuaNics()
+            }
+            when (status) {
+                LuaLogService.STATUS_RUNNING -> {
+                    luaRunning = true
+                    luaStatusLevel = LuaLogStatus.OK
+                    luaStatusText = message
+                }
+                LuaLogService.STATUS_CONNECTING -> {
+                    // 连上之前就属于「运行中」（服务已在前台跑），只是连接态在抖动
+                    luaRunning = true
+                    luaStatusLevel = LuaLogStatus.WARN
+                    luaStatusText = message
+                }
+                LuaLogService.STATUS_WAITING -> {
+                    // 网卡不在：暂停连接（与端口转发「拔出只暂停上游」同义）
+                    luaRunning = true
+                    luaStatusLevel = LuaLogStatus.WARN
+                    luaStatusText = message
+                }
+                LuaLogService.STATUS_ERROR -> {
+                    luaRunning = true
+                    luaStatusLevel = LuaLogStatus.ERROR
+                    luaStatusText = message
+                }
+                LuaLogService.STATUS_STOPPED -> {
+                    luaRunning = false
+                    luaStatusLevel = LuaLogStatus.INFO
+                    luaStatusText = message
+                }
+            }
+        }
+    }
+
+    private val luaEditReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            luaEditMode = intent.getBooleanExtra(LuaLogService.EXTRA_EDIT, false)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -131,6 +206,11 @@ class MainActivity : ComponentActivity() {
             mainPage = savedInstanceState.getInt("mainPage", 0)
             forwardListenPort = savedInstanceState.getString("forwardListenPort", "8000")
             forwardRunning = savedInstanceState.getBoolean("forwardRunning", false)
+            luaRunning = savedInstanceState.getBoolean("luaRunning", false)
+            luaStatusText = savedInstanceState.getString("luaStatusText", "")
+            savedInstanceState.getString("luaStatusLevel")?.let {
+                runCatching { luaStatusLevel = LuaLogStatus.valueOf(it) }
+            }
             if (savedInstanceState.containsKey("selectedDisplayId")) {
                 selectedDisplayId = savedInstanceState.getInt("selectedDisplayId")
             }
@@ -143,6 +223,12 @@ class MainActivity : ComponentActivity() {
         selectedCursorId = cursorIconStore.getSelectedCursorId()
         cursorColor = cursorIconStore.getSelectedColor()
         solidCursor = cursorIconStore.isSolidCursorEnabled()
+
+        // Lua 悬浮日志配置（SharedPreferences 持久化，改一下写一次，所以直接当唯一事实来源）
+        luaFilter = luaLogStore.filter
+        luaLines = luaLogStore.lines.toFloat()
+        luaFontSp = luaLogStore.fontSp.toFloat()
+        luaOpacity = luaLogStore.opacity.toFloat()
         if (selectedCursorId == CursorPresets.CUSTOM_ID) {
             loadCustomCursorPreview()
         }
@@ -185,6 +271,22 @@ class MainActivity : ComponentActivity() {
             registerReceiver(nicsReceiver, nicsFilter)
         }
 
+        // 注册 Lua 悬浮日志状态广播
+        val luaStatusFilter = IntentFilter(LuaLogService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(luaStatusReceiver, luaStatusFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(luaStatusReceiver, luaStatusFilter)
+        }
+
+        // 注册 Lua 编辑位置状态广播（页面按钮 ↔ 服务 ↔ 通知栏三方同步）
+        val luaEditFilter = IntentFilter(LuaLogService.ACTION_EDIT_STATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(luaEditReceiver, luaEditFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(luaEditReceiver, luaEditFilter)
+        }
+
         setContent {
             MaterialTheme {
                 Column(
@@ -202,6 +304,14 @@ class MainActivity : ComponentActivity() {
                             selected = mainPage == 1,
                             onClick = { mainPage = 1 },
                             text = { Text("端口转发") }
+                        )
+                        Tab(
+                            selected = mainPage == 2,
+                            onClick = {
+                                mainPage = 2
+                                refreshLuaNics()
+                            },
+                            text = { Text("Lua 日志") }
                         )
                     }
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -244,7 +354,7 @@ class MainActivity : ComponentActivity() {
                                     stopService(Intent(this@MainActivity, PointerService::class.java))
                                 }
                             )
-                            else -> PortForwardScreen(
+                            1 -> PortForwardScreen(
                                 listenPort = forwardListenPort,
                                 onPortChange = { v ->
                                     if (v.all { it.isDigit() } && v.length <= 5) {
@@ -258,6 +368,41 @@ class MainActivity : ComponentActivity() {
                                 onStart = { startForward() },
                                 onStop = { stopForward() }
                             )
+                            else -> LuaLogScreen(
+                                targetHost = LuaLogService.TARGET_HOST,
+                                targetPort = LuaLogService.TARGET_PORT,
+                                nics = luaNics,
+                                filter = luaFilter,
+                                lines = luaLines,
+                                fontSp = luaFontSp,
+                                opacity = luaOpacity,
+                                running = luaRunning,
+                                editMode = luaEditMode,
+                                statusText = luaStatusText,
+                                statusLevel = luaStatusLevel,
+                                onFilterChange = { v ->
+                                    luaFilter = v
+                                    luaLogStore.filter = v
+                                },
+                                onLinesChange = { v ->
+                                    luaLines = v
+                                    luaLogStore.lines = v.toInt()
+                                    pushLuaStyle()
+                                },
+                                onFontChange = { v ->
+                                    luaFontSp = v
+                                    luaLogStore.fontSp = v.toInt()
+                                    pushLuaStyle()
+                                },
+                                onOpacityChange = { v ->
+                                    luaOpacity = v
+                                    luaLogStore.opacity = v.toInt()
+                                    pushLuaStyle()
+                                },
+                                onToggleEdit = { toggleLuaEdit() },
+                                onStart = { startLuaLog() },
+                                onStop = { stopLuaLog() }
+                            )
                         }
                     }
                 }
@@ -270,6 +415,11 @@ class MainActivity : ComponentActivity() {
         if (requestCode == OVERLAY_PERMISSION_REQUEST_CODE) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
                 startPointerService()
+            }
+        }
+        if (requestCode == OVERLAY_PERMISSION_LUA_REQUEST_CODE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
+                startLuaLog()
             }
         }
     }
@@ -378,6 +528,91 @@ class MainActivity : ComponentActivity() {
         stopService(Intent(this, PortForwardService::class.java))
     }
 
+    // ---- Lua 悬浮日志 ----
+
+    /**
+     * 启动悬浮日志。目标地址固定（[LuaLogService.TARGET_HOST]/[TARGET_PORT]），
+     * 由服务内部的 [com.gtm.vpointer.lua.NetBinder] 按子网自动绑定 ESP 那块网卡，
+     * 所以这里只做「权限校验 + 下发显示参数」。
+     */
+    private fun startLuaLog() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            startActivityForResult(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                ),
+                OVERLAY_PERMISSION_LUA_REQUEST_CODE
+            )
+            return
+        }
+        luaLogStore.filter = luaFilter
+        luaLogStore.lines = luaLines.toInt()
+        luaLogStore.fontSp = luaFontSp.toInt()
+        luaLogStore.opacity = luaOpacity.toInt()
+
+        luaStatusText = "启动中 …"
+        luaStatusLevel = LuaLogStatus.INFO
+        val intent = Intent(this, LuaLogService::class.java).apply {
+            putExtra(LuaLogService.EXTRA_FILTER, luaFilter)
+            putExtra(LuaLogService.EXTRA_LINES, luaLines.toInt())
+            putExtra(LuaLogService.EXTRA_FONT_SP, luaFontSp.toInt())
+            putExtra(LuaLogService.EXTRA_OPACITY, luaOpacity.toInt())
+            putExtra(LuaLogService.EXTRA_DISPLAY_ID, selectedDisplayId ?: Display.DEFAULT_DISPLAY)
+        }
+        ContextCompat.startForegroundService(this, intent)
+        luaRunning = true
+        refreshLuaNics()
+    }
+
+    private fun stopLuaLog() {
+        stopService(Intent(this, LuaLogService::class.java))
+        luaRunning = false
+        luaEditMode = false
+    }
+
+    /** 切换编辑位置（拖动）模式：服务已在跑，直接投递 action，无需重建 */
+    private fun toggleLuaEdit() {
+        if (!luaRunning) return
+        startService(
+            Intent(this, LuaLogService::class.java).setAction(LuaLogService.ACTION_EDIT)
+        )
+    }
+
+    /**
+     * 把「字号 / 不透明度 / 行数」实时推给正在跑的服务。
+     * 滑块拖动会连发几十次 onValueChange，节流 80ms 合并成一次，避免刷爆 startService。
+     */
+    private fun pushLuaStyle() {
+        if (!luaRunning) return
+        luaStyleJob?.cancel()
+        luaStyleJob = lifecycleScope.launch {
+            delay(80)
+            startService(
+                Intent(this@MainActivity, LuaLogService::class.java)
+                    .setAction(LuaLogService.ACTION_UPDATE_STYLE)
+                    .putExtra(LuaLogService.EXTRA_FONT_SP, luaFontSp.toInt())
+                    .putExtra(LuaLogService.EXTRA_OPACITY, luaOpacity.toInt())
+                    .putExtra(LuaLogService.EXTRA_LINES, luaLines.toInt())
+            )
+        }
+    }
+
+    /**
+     * 刷新 Lua 页的网卡诊断列表。枚举网卡是一次性开销（几百微秒），
+     * 不像端口转发那样每 2 秒轮询——这里只在进页面/启动时取一次，
+     * 想再看一次就再次进入该 Tab。
+     */
+    private fun refreshLuaNics() {
+        lifecycleScope.launch {
+            val list = withContext(Dispatchers.IO) {
+                runCatching { NetBinder(applicationContext).describeNics(LuaLogService.TARGET_HOST) }
+                    .getOrDefault(emptyList())
+            }
+            luaNics = list
+        }
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString("serviceState", serviceState.name)
@@ -385,7 +620,16 @@ class MainActivity : ComponentActivity() {
         outState.putInt("mainPage", mainPage)
         outState.putString("forwardListenPort", forwardListenPort)
         outState.putBoolean("forwardRunning", forwardRunning)
+        outState.putBoolean("luaRunning", luaRunning)
+        outState.putString("luaStatusText", luaStatusText)
+        outState.putString("luaStatusLevel", luaStatusLevel.name)
         selectedDisplayId?.let { outState.putInt("selectedDisplayId", it) }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 回到前台且停在 Lua 页时刷一次网卡诊断（热插拔后不必手动切 Tab）
+        if (mainPage == 2) refreshLuaNics()
     }
 
     override fun onDestroy() {
@@ -393,11 +637,14 @@ class MainActivity : ComponentActivity() {
         try { unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(forwardReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(nicsReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(luaStatusReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(luaEditReceiver) } catch (_: Exception) {}
         displayManagerHelper.unregisterDisplayListener()
     }
 
     companion object {
         private const val OVERLAY_PERMISSION_REQUEST_CODE = 1234
+        private const val OVERLAY_PERMISSION_LUA_REQUEST_CODE = 1235
         const val EXTRA_DISPLAY_ID = "display_id"
     }
 }
